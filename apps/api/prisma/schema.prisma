@@ -1,0 +1,24 @@
+// Baseline Prisma schema for Academy Library.
+//
+// This intentionally defines no business entities yet (see Task 01 scope).
+// It exists to establish the connection, generator, and migration
+// infrastructure that later tasks will build on.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Placeholder model used only to prove that the Prisma -> PostgreSQL
+/// pipeline (schema -> migration -> generated client -> query) works
+/// end-to-end. Remove once the first real business model is introduced.
+model SchemaProbe {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  @@map("schema_probe")
+}
