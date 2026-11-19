@@ -4,9 +4,29 @@ import type { ApiErrorResponse } from '@academy-library/contracts';
 import { AppError } from '../errors/AppError.js';
 import { logger } from '../lib/logger.js';
 
+/** `csrf-csrf` throws a plain `http-errors` instance, not an `AppError`
+ * — `code: 'EBADCSRFTOKEN'` is the stable identifier it (and the
+ * `csurf` library before it) uses, checked structurally rather than by
+ * importing its exact error instance/class. */
+function isCsrfError(err: unknown): err is { code: 'EBADCSRFTOKEN'; message: string } {
+  return typeof err === 'object' && err !== null && 'code' in err && err.code === 'EBADCSRFTOKEN';
+}
+
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
   const requestId =
     typeof req.id === 'string' ? req.id : typeof req.id === 'number' ? String(req.id) : undefined;
+
+  if (isCsrfError(err)) {
+    const body: ApiErrorResponse = {
+      error: {
+        message: 'Invalid or missing CSRF token',
+        code: 'INVALID_CSRF_TOKEN',
+        requestId,
+      },
+    };
+    res.status(403).json(body);
+    return;
+  }
 
   if (err instanceof ZodError) {
     const body: ApiErrorResponse = {

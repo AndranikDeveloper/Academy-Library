@@ -18,3 +18,6 @@ export * from './Modal';
 export * from './Dropdown';
 export * from './Tooltip';
 export * from './Toast';
+export * from './ComingSoonDialog';
+export * from './StatCard';
+export * from './Pagination';

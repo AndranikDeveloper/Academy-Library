@@ -166,6 +166,9 @@
   /* ================= Layout ================= */
   --content-max-width: 72rem;
   --layout-header-height: 3.5rem;
+  --layout-sidebar-width: 17rem;
+  --layout-sidebar-width-collapsed: 4.5rem;
+  --layout-drawer-width: 18rem;
 
   /*
    * Breakpoints — documented here for reference and kept in sync by hand

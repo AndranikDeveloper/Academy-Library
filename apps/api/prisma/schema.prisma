@@ -1,8 +1,15 @@
-// Baseline Prisma schema for Academy Library.
+// Prisma schema for Academy Library.
 //
-// This intentionally defines no business entities yet (see Task 01 scope).
-// It exists to establish the connection, generator, and migration
-// infrastructure that later tasks will build on.
+// Task 05A introduced the first real business models — User and Session,
+// the foundation for database-backed authentication. The Task 01
+// `SchemaProbe` placeholder was removed in that same migration.
+//
+// Task 05B introduces the Resource domain: Resource/Course/Tag (plus the
+// ResourceTag/ResourceCourse join tables) and, since restricted-visibility
+// resources need somewhere to point, a minimal Group/GroupMembership/
+// ResourceGroup foundation — none of these existed before this task. See
+// docs/domain/resources.md for the full domain write-up and
+// docs/architecture/decisions.md for the search/authorization rationale.
 
 generator client {
   provider = "prisma-client-js"
@@ -13,12 +20,294 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-/// Placeholder model used only to prove that the Prisma -> PostgreSQL
-/// pipeline (schema -> migration -> generated client -> query) works
-/// end-to-end. Remove once the first real business model is introduced.
-model SchemaProbe {
+enum Role {
+  STUDENT
+  LECTURER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+/// Case-insensitive email uniqueness is enforced by a hand-written
+/// functional unique index on `lower(email)` in this model's migration —
+/// not a `citext` column or the `postgresqlExtensions` preview feature,
+/// to avoid depending on a non-GA Prisma feature. The index is a DB-level
+/// safety net: the application always normalizes (trims + lowercases)
+/// email before writing or querying, so the normal query path never
+/// needs raw SQL — see docs/architecture/authentication.md ("Database
+/// schema") for the full rationale, including the one sharp edge this
+/// creates for future `prisma migrate dev` runs.
+model User {
+  id           String     @id @default(uuid())
+  email        String     @db.VarChar(255)
+  passwordHash String
+  displayName  String     @db.VarChar(160)
+  role         Role       @default(STUDENT)
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  sessions         Session[]
+  groupMemberships GroupMembership[]
+  ownedResources   Resource[]
+
+  @@map("users")
+}
+
+/// An opaque, database-backed session. Only `tokenHash` (SHA-256 of the
+/// random session token) is ever stored — the raw token exists only in
+/// the HttpOnly cookie on the client, never in this table, a log, or an
+/// API response. `lastUsedAt` exists for support/observability (seeing
+/// whether a session is actually active) and as the basis for a future
+/// idle-session cleanup job — this task does not implement sliding
+/// expiration from it.
+model Session {
+  id         String   @id @default(uuid())
+  userId     String
+  tokenHash  String   @unique @db.VarChar(64)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// ---------------------------------------------------------------------
+// Resource domain (Task 05B)
+// ---------------------------------------------------------------------
+
+enum ResourceType {
+  BOOK
+  ARTICLE
+  VIDEO
+  EXERCISE
+  RECORDING
+  OTHER
+}
+
+enum ResourceDifficulty {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+}
+
+enum ResourceVisibility {
+  PUBLIC
+  RESTRICTED
+}
+
+/// A named group that a RESTRICTED resource can be scoped to (e.g. a
+/// course cohort or department), and a user can belong to. There is no
+/// Group CRUD API in this task — groups are managed only via the dev
+/// seed — but the table is real and normalized, not a placeholder: it is
+/// what makes "restricted visibility" something the backend can actually
+/// check against the database, rather than a UI-only badge the way it
+/// was in Task 04 (see docs/domain/resources.md).
+model Group {
   id        String   @id @default(uuid())
+  name      String   @db.VarChar(160)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships     GroupMembership[]
+  resourceGroups  ResourceGroup[]
+
+  @@unique([name])
+  @@map("groups")
+}
+
+/// Many-to-many between User and Group. Both sides cascade: removing a
+/// user or a group removes their memberships, never leaves an orphaned
+/// row — membership has no meaning once either side is gone, unlike a
+/// Resource's ownership (see `Resource.ownerId` below, which is
+/// deliberately NOT cascading).
+model GroupMembership {
+  id        String   @id @default(uuid())
+  userId    String
+  groupId   String
   createdAt DateTime @default(now())
 
-  @@map("schema_probe")
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, groupId])
+  @@index([groupId])
+  @@map("group_memberships")
+}
+
+/// A minimal course reference — `CourseRefSchema` in
+/// `packages/contracts/src/resource.ts` is `{ id, title }`, and that is
+/// the entirety of what this task's contracts need a Course to carry.
+model Course {
+  id        String   @id @default(uuid())
+  title     String   @db.VarChar(160)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  resourceCourses ResourceCourse[]
+
+  @@unique([title])
+  @@map("courses")
+}
+
+/// A resource tag. Unlike Course/Group (curated, seed/admin-managed
+/// entities that a create/update request may only *reference* by id),
+/// tags are a lightweight folksonomy — the contract's `tags: string[]`
+/// has no notion of a tag "not existing yet", so the service layer
+/// find-or-creates one per normalized name on write rather than
+/// rejecting an unrecognized tag the way it rejects an unrecognized
+/// `courseId`/group id. See docs/domain/resources.md ("Tag vs. Course/
+/// Group association semantics") for the full reasoning — this is the
+/// one place this task resolves an ambiguity the contracts left open
+/// rather than one they specify directly.
+///
+/// `name` is normalized (trimmed + lowercased) by the service before
+/// every write and lookup, same discipline as `User.email` — but unlike
+/// email, a tag name collision has no security implication, so a plain
+/// `@unique` on the already-normalized value is sufficient; there is no
+/// functional-index equivalent needed here.
+model Tag {
+  id        String   @id @default(uuid())
+  name      String   @db.VarChar(80)
+  createdAt DateTime @default(now())
+
+  resourceTags ResourceTag[]
+
+  @@unique([name])
+  @@map("tags")
+}
+
+/// The real, normalized Resource row backing `ResourceDetailSchema`/
+/// `ResourceSummarySchema`. A handful of fields are intentionally NOT
+/// exposed in the public DTO (see `modules/resources/resource.mapper.ts`):
+/// `ownerId` backs authorization (`policy.ts`'s `ownedBy<Subject>()`
+/// already anticipates this exact shape) and is never serialized to a
+/// client response.
+///
+/// `creatorName`/`creatorAffiliation` are flattened from the contract's
+/// nested `creator: { name, affiliation }` object — there is no separate
+/// Creator entity (a creator is not a reusable, identity-bearing row the
+/// way a Course or Group is; it is just descriptive text attached to one
+/// resource), so this is a column-flattening choice, not a contract
+/// change.
+///
+/// `durationSeconds` is nullable at the column level because the
+/// per-type requirement (`VIDEO`/`RECORDING` require it, every other
+/// type must omit it) is a discriminated-union rule in the contracts,
+/// not something a single column's type can express. It is enforced at
+/// two independent layers: the Zod contracts (create) and the service
+/// layer (update, since `ResourceUpdateInputSchema` is flat and must be
+/// checked against the *merged* resulting state — see
+/// `resource.service.ts`), plus a DB-level `CHECK` constraint added by
+/// hand in this model's migration as a third, defense-in-depth layer —
+/// same pattern as `User`'s case-insensitive email index: a DB
+/// invariant hand-written into migration SQL because Prisma's schema DSL
+/// cannot express it, and consequently invisible to `schema.prisma`
+/// (same future `prisma migrate dev`-drift sharp edge documented there,
+/// now also covering this constraint, see below).
+///
+/// `searchVector` is a Postgres `GENERATED ALWAYS AS ... STORED`
+/// `tsvector` column, maintained entirely by Postgres from `title`/
+/// `creatorName`/`publisher`/`description` on every insert/update —
+/// Prisma has no schema syntax for a generated column, so it is declared
+/// here only as an `Unsupported` type (so Prisma Client knows to leave it
+/// alone entirely) and the actual generation expression + its GIN index
+/// live solely in the migration SQL. See docs/domain/resources.md
+/// ("Search implementation") for why tag names are matched separately
+/// (via `pg_trgm`) rather than folded into this same vector.
+///
+/// Sharp edge (same family as `User`'s email index, now bigger): none of
+/// the `CHECK` constraint, the generated `searchVector` column, its GIN
+/// index, the `pg_trgm` extension, or the trigram index on `Tag.name` are
+/// expressible in `schema.prisma`. A future `prisma migrate dev` run
+/// diffs the *declared* schema against the database and may propose
+/// dropping/altering any of them as unrecognized drift — do not accept
+/// such a diff without checking it against this comment and the
+/// migration SQL first.
+model Resource {
+  id                  String             @id @default(uuid())
+  title               String             @db.VarChar(200)
+  description         String             @db.VarChar(4000)
+  type                ResourceType
+  difficulty          ResourceDifficulty
+  creatorName         String             @db.VarChar(160)
+  creatorAffiliation  String?            @db.VarChar(160)
+  coverImageUrl       String?
+  sourceUrl           String?
+  publishedAt         DateTime?
+  publisher           String?            @db.VarChar(160)
+  durationSeconds     Int?
+  visibility          ResourceVisibility @default(PUBLIC)
+  ownerId             String
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  /// See the model doc comment above — generated and indexed entirely in
+  /// migration SQL, never written to by the application.
+  searchVector Unsupported("tsvector")?
+
+  owner  User             @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  tags   ResourceTag[]
+  courses ResourceCourse[]
+  groups ResourceGroup[]
+
+  @@index([ownerId])
+  @@index([type])
+  @@index([difficulty])
+  @@index([visibility])
+  @@index([createdAt])
+  @@map("resources")
+}
+
+/// Join table, Resource <-> Tag. Composite PK (no separate `id`) — the
+/// pair is the identity; there is never a reason to reference "this
+/// specific tagging" independent of the (resource, tag) pair itself.
+model ResourceTag {
+  resourceId String
+  tagId      String
+
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  tag      Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([resourceId, tagId])
+  @@index([tagId])
+  @@map("resource_tags")
+}
+
+/// Join table, Resource <-> Course. Same composite-PK reasoning as
+/// `ResourceTag`.
+model ResourceCourse {
+  resourceId String
+  courseId   String
+
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  course   Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@id([resourceId, courseId])
+  @@index([courseId])
+  @@map("resource_courses")
+}
+
+/// Join table, Resource <-> Group — backs `restrictedToGroupIds` on a
+/// `RESTRICTED` resource. A `PUBLIC` resource simply has no rows here;
+/// nothing distinguishes "public" from "restricted to zero groups" at
+/// this table alone — `Resource.visibility` is the authoritative field,
+/// this table only matters when it is `RESTRICTED`.
+model ResourceGroup {
+  resourceId String
+  groupId    String
+
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  group    Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([resourceId, groupId])
+  @@index([groupId])
+  @@map("resource_groups")
 }

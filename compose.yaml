@@ -49,6 +49,13 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DATABASE_URL: postgresql://${POSTGRES_USER:-academy}:${POSTGRES_PASSWORD:-academy}@postgres:5432/${POSTGRES_DB:-academy_library}?schema=public
+      # Required — the server refuses to start without it (see
+      # docs/architecture/authentication.md, "Cookie policy"/"CSRF
+      # strategy"). Set a real one via the root .env for anything beyond
+      # local Compose testing; generate with `openssl rand -hex 32`.
+      CSRF_SECRET: ${CSRF_SECRET:?CSRF_SECRET must be set in the root .env — generate with `openssl rand -hex 32`}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-academy_session}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-720}
     ports:
       - '${API_PORT:-4000}:4000'
     healthcheck:

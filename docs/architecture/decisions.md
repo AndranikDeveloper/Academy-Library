@@ -224,3 +224,821 @@ were added (Task 01's single HomePage test never exercised either path):
   announcements across a polite/assertive pair of live regions by
   variant felt like premature complexity for a notification system with
   exactly one consumer so far.
+
+---
+
+# Task 03 — application shell & navigation
+
+## Project structure: `widgets/` added, `features/*` kept (no `pages/*`)
+
+The brief suggested a `pages/*` tree alongside `widgets/*`. `pages/*` was
+not created — it would have duplicated the `features/<feature>/` convention
+already established in Tasks 01–02 at exactly the same granularity (one
+directory per user-facing screen, owning its own component, CSS Module, and
+tests). `widgets/` **was** added as a genuinely new layer: composite,
+app-shell-specific UI (`app-sidebar`, `app-header`, `mobile-navigation`,
+`page-header`) that is too specific to this app's shell to belong in
+`shared/ui`, but isn't a page either. `app/router/` and `app/providers/`
+are new subdirectories of the existing `app/` layer rather than a
+parallel structure — `routes.tsx`/`router.tsx`/`router.test.tsx` moved
+into `app/router/`, and `main.tsx`'s provider tree was extracted into
+`app/providers/AppProviders.tsx`.
+
+## Dark sidebar/drawer via local token overrides, not a parallel color namespace
+
+The sidebar and mobile drawer are always dark, independent of the
+app-wide light/dark theme toggle. Rather than inventing a second
+`--sidebar-*` token namespace (which every component that renders inside
+the sidebar — `Avatar`, `IconButton`, `Select`, `Tooltip` — would need a
+bespoke dark variant to understand), `AppSidebar.module.css` and
+`MobileNavDrawer.module.css` **locally redeclare the existing generic
+`--color-*` custom properties** (`--color-bg`, `--color-surface`,
+`--color-text-primary`, `--color-accent`, …) on their own root class,
+scoped by normal CSS cascade/inheritance to everything inside. Every
+reused `shared/ui` component keeps working unmodified because it only
+ever reads the generic token names. Only three new tokens were added to
+`tokens.css` for this task, all layout (not color):
+`--layout-sidebar-width`, `--layout-sidebar-width-collapsed`,
+`--layout-drawer-width`.
+
+## Drawer breakpoint: `<1024px`, not a separate tablet rule
+
+The brief's breakpoint table lists tablet (768–1023px) and mobile
+(<768px) as distinct ranges, but both get the drawer; only desktop
+(≥1024px, covering the brief's 1024–1439px and 1440px+ rows together)
+gets the persistent, collapsible sidebar. A single `@media (max-width:
+1023px)` rule in `AppSidebar.module.css` / `AppHeader.module.css` /
+`AppLayout.module.css` draws that one line rather than adding a second,
+functionally-identical breakpoint for tablet — there is no behavioral
+difference between "drawer at 900px" and "drawer at 500px" that the task
+asked for.
+
+## `MobileNavDrawer` reuses the overlay **hooks**, not the `Modal` **component**
+
+`Modal` is visually centered with its own header/footer chrome, which
+doesn't match a slide-in, full-height, edge-anchored navigation drawer —
+wrapping `<Modal>` and fighting its layout would have been the
+"inappropriate abstraction" the brief warned against. Instead
+`MobileNavDrawer` calls the same underlying hooks `Modal` is built from
+directly: `usePortal`, `useFocusTrap`, `useEscapeKey`, `useOutsideClick`,
+`useScrollLock`, `useRestoreFocus` (all from Task 02's `shared/hooks/`).
+This gets correct focus-trap/Escape/backdrop/scroll-lock/focus-restore
+behavior without duplicating that logic or forcing an unrelated visual
+shape onto `Modal`.
+
+## Honest placeholders: `ComingSoonDialog`, not fake buttons
+
+Header search and notifications, and two admin "create" actions, have no
+real implementation yet. Rather than leaving dead-looking buttons or (worse)
+faking success, all four open a shared `shared/ui/ComingSoonDialog`
+(`Modal` + `EmptyState`, Sparkles icon, "Coming soon") that honestly states
+the feature isn't built yet. This is the one new `shared/ui` addition this
+task made for the shell itself (the other, `StatCard`, is a small
+Card-based metric display used by the Dashboard and Admin Dashboard
+placeholder pages).
+
+## Role-based navigation preview is explicitly **not** authorization
+
+`app/dev/RoleProvider` + `useRole` hold an in-memory (never persisted)
+`UserRole` (`STUDENT` by default) purely to preview how the sidebar/admin
+section look under each role while there is no real authentication yet.
+`RoleSwitcher`, the `<Select>` that changes it, is gated behind
+`import.meta.env.DEV` at every call site (sidebar footer, Settings page)
+and is confirmed fully tree-shaken out of the production bundle (`pnpm
+build` output contains zero occurrences of "Preview role" or
+`design-system`, same check used in Task 01/02 for the dev-only design
+system route). `AdminLayout` also renders a persistent, non-dismissable
+`Alert` stating plainly that reaching `/admin/*` is not currently gated by
+any real permission check — this UI-only visibility rule must not be
+mistaken for security until a real backend auth/RBAC system exists.
+
+**Superseded in Task 05C.1**: once real authentication existed to
+replace it with, this entire mechanism (`RoleProvider`/`useRole`/
+`RoleSwitcher`, and `AdminLayout`'s disclaimer banner) was deleted
+rather than left alongside the real thing — see that task's own
+section below for why, and `docs/architecture/authentication.md`
+("Frontend authentication") for what replaced it.
+
+## A real CSS bug found only through browser testing
+
+Manual visual verification (not caught by lint/typecheck/unit tests)
+found the collapsed sidebar's icon tooltips clipped at the sidebar's right
+edge, showing only a sliver of text. Cause: `AppSidebar.module.css`'s
+`.navScroll` had `overflow-y: auto; overflow-x: hidden;` — per the CSS
+overflow spec, once one axis is set to a non-`visible` value, the other
+axis (left at its default `visible`) is forced to compute as `auto` too,
+so the `Tooltip`'s `position: absolute` content got clipped instead of
+escaping the sidebar. Fixed by removing both `overflow-x`/`overflow-y`
+from `.navScroll` entirely — the nav list (10 items max) never actually
+reaches viewport height in practice, so it does not need to be its own
+scroll container. Verified by comparing before/after screenshots of the
+collapsed sidebar's hover tooltip.
+
+## Out of scope for Task 03 (confirmed against the task brief)
+
+- No resource CRUD, filtering, search, or final library/catalogue design
+  — `LibraryPage` contains a single, explicitly-labeled static preview
+  grid to demonstrate layout composition only.
+- No authentication, no real authorization/RBAC, no mock login system —
+  role preview is dev-only UI, never a security boundary (see above).
+- No Redux/RTK Query; TanStack Query (already in place from Task 01/02)
+  was not replaced.
+- No new CSS framework — all shell styling uses the existing CSS Modules
+  - design tokens.
+
+---
+
+# Task 04 — Resource domain contracts & Library Explorer
+
+Full rationale for the domain contracts, the mock/HTTP repository
+boundary, and the REST contract they assume lives in
+[`docs/domain/resources.md`](../domain/resources.md); this section
+covers decisions outside that doc's scope.
+
+## `shared/data/resources/` as a new layer
+
+Repository-pattern data access didn't have a home in the existing
+`shared/{ui,hooks,config}` taxonomy — `config` is static data/pure
+functions, not an async boundary. `shared/data/resources/` was added as
+a sibling, read-only (`list`/`getById` only — no write methods, since
+nothing in this task implements writes) and framework-agnostic (no React
+inside it; only the TanStack Query hooks in `features/library/api/`
+import from it).
+
+## A real CSS bug found only through browser testing
+
+Manual verification (not caught by lint/typecheck/unit tests) found
+every resource card rendering as nothing but an oversized cover image —
+title, author, and description were present in the DOM but invisible,
+clipped below the card's `overflow: hidden` boundary. Cause:
+`ResourceCover`'s wrapping `.frame` class set `height: 100%` directly,
+which — per spec — always wins over a sibling `aspect-ratio` rule once
+both would apply to the same box. In grid mode, that `height: 100%`
+resolved against a CSS-grid-stretched `<li>` ancestor's full height,
+so the cover claimed the entire card instead of a 16:10 banner at the
+top, squeezing the text body out of the visible area entirely. Fixed by
+removing the explicit height: grid mode now sizes purely from
+`aspect-ratio` (`width` only), and list mode sizes correctly from the
+parent flexbox's default `align-items: stretch` — no explicit height
+needed in either case. A second, smaller bug from the same testing pass:
+three new `<ul>` lists (`ResourceGrid`, the card's tag list, and
+`Pagination`'s page-number list) were missing `list-style: none`,
+leaving stray bullet markers between grid cells.
+
+## `type="text"`, not `type="search"`, for the search field
+
+`SearchBar` renders its `Input` as `type="text"` rather than the
+semantically-closer `type="search"`. Chrome (and most browsers) render
+their own built-in clear button for `type="search"` inputs once there's
+a value — which duplicated the custom `IconButton` clear control already
+wired to the debounce/URL logic, producing two visible "X" controls at
+once. Found via manual browser testing, not caught by any automated
+test (jsdom doesn't render the native control).
+
+## `resetAll`, not `setSearch('') + clearFilters()`, for "clear everything"
+
+The empty-results state's "Clear search & filters" action originally
+called `setSearch('')` followed by `clearFilters()` — two independent
+`setSearchParams` calls in the same handler. This is a real React Router
+footgun: each call's updater function reads `searchParams` as it exists
+at call time, so the _second_ call doesn't see the first call's
+not-yet-applied change and can clobber it. In practice, `clearFilters()`
+(which never touches `search`) won, leaving the search term in place —
+a caught, reproducible bug (`useLibraryQueryState.test.tsx`'s regression
+test documents the broken two-call pattern directly, not just the fix).
+Fixed by adding a `resetAll()` method that clears search and every
+filter in a single `setSearchParams` update.
+
+## Pagination added to `shared/ui`
+
+Task 02's decision log explicitly deferred `Pagination` ("nothing to
+paginate yet"). This task is that trigger: a simple Prev/Next +
+every-page-number control (no first/last + ellipsis windowing — the
+40-fixture catalogue at a fixed page size of 12 never produces enough
+pages to need it) was added to `shared/ui/Pagination`, following the
+same component/CSS-module/test/barrel-export conventions as every other
+primitive there.
+
+## CSS-only cover placeholders, no hotlinked images
+
+Every fixture's `coverImageUrl` is intentionally absent — see
+docs/domain/resources.md. The Library Explorer never depends on an
+external image resolving for its layout or tests to be correct; the
+real-`<img>` + `onError`-fallback code path in `ResourceCover` exists
+and is unit-tested (simulating a failed load via `fireEvent.error`), but
+isn't exercised by any fixture today.
+
+## Out of scope for Task 04 (confirmed against the task brief)
+
+- No Prisma `Resource` model and no `/api/v1/resources` routes — the
+  mock repository and `HttpResourceRepository`'s assumed contract are
+  the full extent of backend-facing work; see docs/domain/resources.md
+  for what the next task would need to build to match.
+- No authentication or real authorization — `RESTRICTED` visibility is
+  shown, not enforced (same non-authoritative framing as Task 03's role
+  preview).
+- No bookmarks or collection mutations on the resource detail page.
+- TanStack Query (already in place) was not replaced; no custom
+  server-state cache was layered on top of it.
+
+---
+
+# Task 05A — database & secure authentication foundation
+
+Full rationale for the session design, cookie/CSRF strategy, role
+model, API contracts, database schema, migration approach, and
+development accounts lives in
+[`docs/architecture/authentication.md`](./authentication.md); this
+section covers decisions outside that doc's scope.
+
+## `src/modules/auth/` as the first `modules/` directory
+
+Task 01's own `overview.md` anticipated this: "real business domains...
+should get their own directory under `src/` (e.g.
+`src/modules/resources/`)". `modules/auth/` is the first one, holding
+the session service, user repository, auth middleware, and the
+object-level policy foundation — `src/routes/auth.routes.ts` and
+`src/middleware/{csrf,rateLimit,validateOrigin}.ts` stay at the
+existing top-level `routes/`/`middleware/` layers (request-pipeline
+concerns Task 01 already established a home for), rather than moving
+everything auth-related into the new directory wholesale.
+
+## Same-origin by default: Vite proxy in dev, nginx reverse proxy in Compose
+
+Both changes exist purely to make `SameSite=Lax` actually sufficient
+scope-wise (see authentication.md's "Cookie policy") without resorting
+to cross-site cookie exceptions:
+
+- `apps/web/vite.config.ts` gained a `server.proxy` entry forwarding
+  `/api/*` to the local API, and both `apps/web/.env.example`/`.env`
+  changed `VITE_API_BASE_URL` from an absolute `http://localhost:4000/api/v1`
+  to a relative `/api/v1` — neither is consumed by any frontend code
+  yet (Task 04 only built a mock repository), so this is a pure
+  infrastructure change, not a behavior change to anything currently
+  running.
+- `infra/docker/web/nginx.conf` gained a `location /api/` reverse-proxy
+  block to the `api` Compose service. This closes a real, pre-existing
+  gap: the `web` Compose service's `VITE_API_BASE_URL` already defaulted
+  to the relative `/api/v1` (set in `apps/web/Dockerfile`/`compose.yaml`
+  since Task 01), but nginx had no handler for that path at all — any
+  future frontend code calling it through the Compose stack would have
+  silently hit the SPA's catch-all `try_files` fallback instead of the
+  API. Discovered while implementing the "prefer a same-origin `/api`
+  reverse-proxy deployment" requirement, not a pre-existing bug report.
+
+## `Secure` tied to `NODE_ENV`, not a per-request HTTPS check
+
+`csrf-csrf`'s cookie options are configured once, at startup, with no
+per-request hook — so the session cookie's `Secure` flag (set directly
+by this app's own `res.cookie()` call) and the CSRF cookies' `Secure`
+flag (set by the `csrf-csrf` library) needed to agree on the _same_
+rule to stay consistent, and only a static, startup-time rule can
+satisfy both. `NODE_ENV === 'production'` was chosen over a dynamic
+`req.secure` (which Express can compute per-request, respecting `trust
+proxy`) for exactly that reason — see authentication.md's "Cookie
+policy" and "Known limitations" for what this means for the bundled
+Docker Compose stack specifically.
+
+## `authRateLimiter` is skipped under `NODE_ENV=test`
+
+Found via a genuinely flaky integration-test run, not designed in
+upfront: `express-rate-limit`'s default in-memory store is one counter
+per process for the limiter's entire lifetime, and
+`tests/auth.routes.test.ts` shares one `createApp()` instance across
+its whole file. Enough register/login requests across unrelated test
+cases accumulated against the _same_ limiter instance to start 429-ing
+later tests' logins for reasons that had nothing to do with what those
+tests were checking — intermittently, and only once enough tests ran
+before the affected one, which is why it surfaced as "passes in
+isolation, fails in the full suite" rather than a deterministic
+failure. Fixed with `skip: () => env.NODE_ENV === 'test'` on the real
+limiter, with the limiting _mechanism_ itself verified separately
+against an isolated, non-shared instance (`tests/rateLimit.test.ts`).
+
+## Out of scope for Task 05A (confirmed against the task brief)
+
+- No Resource/Course/Tag/Collection Prisma models and no Resource CRUD
+  — this task is the database/auth foundation those will sit on top of.
+- No frontend login/registration pages, and the Library Explorer
+  (Task 04) was not touched.
+- No JWTs, no OAuth, no password reset, no email verification — see
+  authentication.md's "Known limitations" for which of these are
+  genuine pre-launch requirements versus deliberately deferred scope.
+- No Redux; TanStack Query (already in place) was not replaced.
+
+## `modules/resources/` repeats the `modules/auth/` split (Task 05B)
+
+`repository` (Prisma + the one raw-SQL search/filter/pagination query),
+`service` (validation, association resolution, orchestration), `policy`
+(authorization rules), `mapper` (DB row → public DTO) — the same shape
+Task 05A's `modules/auth/` already established, not a new pattern
+invented for this domain. `resource.policy.ts`'s `canModifyResource` and
+`canCreateResource` are built directly on Task 05A's generic
+`hasRole`/`ownedBy`/`anyOf`/`allOf` from `modules/auth/policy.ts` — that
+file's own doc comment anticipated exactly this (`ownedBy<Subject
+extends { ownerId: string }>()`, written before any `ownerId`-bearing
+model existed) when it was added in Task 05A.
+
+## `Group`/`GroupMembership` introduced, not deferred (Task 05B)
+
+The task brief's `restrictedToGroupIds` field has existed in the
+contracts since Task 04, but nothing backed it — the mock repository
+returns `RESTRICTED` resources unconditionally (see
+domain/resources.md). Enforcing it for real needed somewhere a group id
+actually resolves to, and someone to check membership against — the
+brief explicitly called out building "the minimal normalized group/
+membership foundation" rather than faking enforcement against ids that
+resolve to nothing. Kept deliberately minimal: no Group CRUD API, only
+what `ResourceGroup`'s many-to-many needs (see domain/resources.md,
+"Database schema").
+
+## Two raw queries for list/search, not one with `COUNT(*) OVER()`
+
+A single query combining paginated ids and a `COUNT(*) OVER()` window
+total is a common trick, but it has a real edge case here: a window
+function's value is only readable off a _returned_ row, and an
+out-of-range page (`page` beyond the last one) legitimately returns
+zero rows — so there is no row left to read the total off of, exactly
+when "correct empty results" (the task's own requirement) matters most.
+Two queries sharing the identical `Prisma.sql` `WHERE` fragment — one
+`COUNT(*)`, one the actual page of ids — has no such edge case and
+cannot let the two disagree with each other. Still not an N+1: fixed at
+two raw queries plus one Prisma `findMany` to hydrate relations,
+regardless of page size (see `findVisibleResourcePage`'s doc comment in
+resource.repository.ts).
+
+## Visibility gates existence disclosure for writes too, not just reads
+
+A resource `PATCH`/`DELETE` by someone who cannot even _see_ the target
+(restricted, not their group, not their resource) returns `404`, the
+same as a resource that genuinely doesn't exist — not `403`, which would
+confirm it exists. Only once a resource is confirmed visible does a
+missing _write_ permission become `403` (you can see it; you're just not
+allowed to change it). This generalizes the read-path "don't reveal
+restricted-resource existence" rule to writes, rather than treating
+reads and writes as two independent authorization questions with two
+different existence-disclosure policies.
+
+## Tags are a folksonomy; Courses and Groups are curated (Task 05B)
+
+The task brief asks to "validate course/tag associations," worded as if
+symmetric — but the contracts give Tag no identity beyond a bare string
+with no creation endpoint, while Course/Group are real, seed/admin-
+managed entities a client can only _reference_. Rather than silently
+picking one reading, both are documented explicitly in
+domain/resources.md ("Scope decisions"): an unrecognized `courseId` or
+group id is rejected (`400`); an unrecognized tag name is created on the
+spot (trimmed, lowercased, upserted) — a resource create/update is the
+only way a new tag ever comes into existence, same as how
+`POST /auth/register` was Task 05A's only path to a new `User`.
+
+## `coverImageUrl`/`sourceUrl` schema tightened to reject unsafe URL schemes
+
+`apps/web/src/shared/data/resources/url.ts`'s `isSafeHttpUrl` already
+carried a doc comment stating plainly that `z.string().url()` permits
+`javascript:`/`data:` schemes and is only ever used as a render-time
+guard because of it — a documented gap in an existing contract, which
+the task's own instructions call out as something to fix with the
+smallest justified correction, not leave as a known hole. Closed with a
+shared `SafeHttpUrlSchema` refinement in `packages/contracts/src/resource.ts`,
+applied everywhere `coverImageUrl`/`sourceUrl` appear. Backward-compatible
+by construction (narrows, never widens); the frontend guard is
+unchanged and still runs, since it protects against any data written
+before this check existed.
+
+## Two real bugs found while building the resource test suite
+
+Found during this task's own test-writing, not designed in upfront —
+captured here in the same spirit as Task 05A's `authRateLimiter`
+discovery above:
+
+- **A CSRF test helper regression, self-inflicted mid-task.** Extending
+  `tests/helpers/testClient.ts`'s `postWithCsrf` to also support
+  `patchWithCsrf`/`deleteWithCsrf` initially took an already-constructed
+  `request.Test` as a parameter, built by the caller _before_ the shared
+  helper's `await client.csrfToken()` call. `client.post(path)` snapshots
+  the `supertest.agent`'s cookie jar at construction time — building it
+  before the token fetch meant the write request went out missing the
+  very `csrf_secret` cookie the just-fetched token was bound to, failing
+  every login in the new resource test file with a confusing
+  `INVALID_CSRF_TOKEN` (not an auth failure) that did not reproduce in a
+  standalone script using the same flow by hand. Fixed by having the
+  shared helper build the request itself, from a path string, strictly
+  after the token fetch resolves — see `sendWithCsrf`'s doc comment in
+  testClient.ts.
+- **A real cross-file race, latent since Task 05A, triggered by adding a
+  second DB-touching test file.** `tests/auth.routes.test.ts`'s
+  `resetAuthTables()` (sessions + users) was sufficient while it was the
+  _only_ test file resetting those tables. Adding
+  `tests/resources.routes.test.ts` — which creates `Resource` rows owned
+  by users, and whose own `beforeEach` only cleans up at the _start_ of
+  each test, not after the suite's last one — meant a leftover resource
+  could still reference a user by the time a _different file_ tried to
+  delete that user, violating `Resource.ownerId`'s `onDelete: Restrict`
+  foreign key. Fixed two ways: both files now call the fuller
+  `resetAllTables()` (resources, then auth tables, in dependency order —
+  see tests/helpers/db.ts) instead of `resetAuthTables()` directly, and
+  `apps/api/vitest.config.ts` gained `fileParallelism: false` so test
+  files sharing one real database can never race each other on worker
+  scheduling regardless of which tables any given file touches.
+
+## Out of scope for Task 05B (confirmed against the task brief)
+
+- No frontend authentication UI, and `apps/web` was not switched to the
+  real `/api/v1/resources` endpoints — the Library Explorer still runs
+  against its mock repository (see domain/resources.md).
+- No bookmarks, collections, physical book loans, or Reel/Depot/Skill
+  Map integrations.
+- No Redux; TanStack Query was not replaced.
+- No Elasticsearch/Meilisearch/Redis — search is plain PostgreSQL
+  full-text search plus `pg_trgm`, per the brief's explicit instruction.
+- No Group CRUD API, no `/courses`/`/tags` metadata endpoints — see
+  domain/resources.md's "Scope decisions" for why neither was added.
+
+---
+
+# Task 05C.1 — frontend authentication & session integration
+
+Full architectural write-up lives in
+[`docs/architecture/authentication.md`](./authentication.md)'s new
+"Frontend authentication" section — this covers decisions outside that
+doc's scope, plus what was found or broke along the way.
+
+## No AuthContext — TanStack Query's cache is the only auth store
+
+The task brief is explicit that this must not become "a custom
+duplicate authentication cache." A second React Context holding a copy
+of the signed-in user would be exactly that: a second place that could
+disagree with the `['auth', 'me']` query (e.g. mid-logout, or if one
+forgot to update while the other updated), with no principled answer
+for which one is right. Every consumer — `RequireAuth`, `RequireRole`,
+`ProfileMenu`, `AppSidebar`, `SidebarNav`, `SettingsPage` — calls
+`useCurrentUser()` directly instead.
+
+## MSW pinned to v2, not the latest v3
+
+`pnpm add -D msw` resolved `3.0.7` by default, which immediately
+surfaced two peer-dependency conflicts: `msw@3` itself wants `vite@>=6`
+(this project is pinned to `5.4.x`), and `@vitest/mocker` (part of the
+installed `vitest@2.1.9`) wants `msw@^2.4.9`. Reinstalled as `msw@^2`
+instead of chasing an unplanned Vite/Vitest major-version upgrade to
+satisfy a test-tooling dependency — out of scope for this task either
+way.
+
+## A real synchronous-throw bug, found by the test suite
+
+`features/auth/api/authApi.ts`'s `login`/`register` were originally
+plain functions whose body called `LoginInputSchema.parse(input)`/
+`RegisterInputSchema.parse(input)` and returned `apiRequest(...)`'s
+promise — typed as returning `Promise<AuthResponse>`, but not
+themselves `async`. A Zod parse failure throws _synchronously_, before
+any promise is ever created or returned — so calling `login(badInput)`
+threw straight out of the call expression instead of producing a
+rejected promise. Every promise-shaped consumer (a mutation's
+`onError`, `await ... catch`, this file's own
+`expect(...).rejects.toThrow()` test) would never see it as a
+rejection; the first one to actually trip over it was the test
+asserting registration validation. Fixed by marking both functions
+`async` — the one-word change that makes a synchronous throw inside
+automatically become a promise rejection, matching `fetchCurrentUser`
+(already `async`) right next to it. Caught by the test, not inspection
+— a real argument for actually running MSW-backed tests rather than
+reasoning about the promise chain by eye.
+
+## A real RTL query gotcha: the `*` on a required label is not hidden from `getByLabelText`
+
+`Input`'s `required` prop renders a visually-decorative `<span
+aria-hidden="true"> *</span>` inside the `<label>`. `aria-hidden`
+excludes it from the _accessible name_ an actual screen reader would
+announce, but React Testing Library's `getByLabelText` by default
+matches against the label element's raw `textContent` — which does not
+respect `aria-hidden` — so `getByLabelText('Email')` failed to find a
+label whose literal text content is `"Email *"`. Fixed in the test
+files by matching a regex prefix (`getByLabelText(/^Email/)`) rather
+than loosening the component itself — the component's accessibility
+behavior is correct; the query needed to account for RTL's specific
+matching algorithm, not the other way around.
+
+## `?from=` validated against open redirect, and against redirect loops specifically
+
+`app/auth/safeRedirect.ts`'s `resolveSafeRedirect` is the one gate
+every `?from=` value passes through before reaching `<Navigate>` —
+covered in detail in authentication.md's "Routing behavior". Two
+things worth calling out as decisions, not just implementation: it
+requires a _parsed_ same-origin check (`new URL(value,
+window.location.origin).origin === window.location.origin`), not just
+a string prefix check, since a prefix check alone (`startsWith('/')`)
+still accepts a protocol-relative `//evil.example.com`; and it takes an
+explicit `excludePaths` list used specifically to reject `/login`/
+`/register` themselves, which a purely syntactic same-origin check
+would have no reason to flag but which would otherwise let a crafted
+`/login?from=/login` bounce an authenticated visitor back to `/login`
+forever.
+
+## `RequireAuth` fails closed on a query error, not just on `null`
+
+`useCurrentUser()` can resolve to `null` (confirmed anonymous — the
+server said `401`) or land in `isError` (the check itself failed —
+network error, `5xx`). `RequireAuth` treats both identically: redirect
+to `/login`. Deliberately not finer-grained ("retry on error, redirect
+only on null") — a route guard that can't positively confirm a session
+exists must not render as if one does; failing open here would be the
+wrong default for a security-relevant check, even though it means a
+transient network blip briefly looks the same as being logged out.
+
+## `RequireRole` renders an inline 403, not a redirect
+
+A signed-in `STUDENT`/`LECTURER` who navigates to `/admin` sees an
+honest "you don't have access to this page" message in place, rather
+than being silently redirected to `/dashboard` or anywhere else. A
+redirect here would read as a confusing dead link with no explanation;
+an inline message is both more honest and strictly a UI/UX choice —
+deleting `RequireRole` entirely would not change what the backend's
+own `requireRole` middleware allows a non-admin session to do against
+any API.
+
+## `vite preview` needed its own `/api` proxy too
+
+`playwright.config.ts` targets `vite preview` (the production build),
+not the dev server — but only `server.proxy` existed in
+`vite.config.ts`; `preview` has no such default and every API call from
+an e2e run against the built preview would 404 against the static file
+server instead of reaching the API. Added `preview.proxy` mirroring
+`server.proxy` exactly (same target, same `changeOrigin`) — this also
+makes `vite preview` a closer match for the real nginx-fronted
+production topology, not just an e2e-testing convenience.
+
+## Out of scope for Task 05C.1 (confirmed against the task brief)
+
+- No Resource API integration, and the Library Explorer was not
+  switched to `HttpResourceRepository` — still the Task 04 mock.
+- No bookmarks, no collections, no password reset, no email
+  verification.
+- No Redux/RTK Query; TanStack Query was not replaced.
+- No CSS framework introduced; all new UI uses the existing design
+  system and CSS Modules.
+- `apps/api` was not modified — including the CSRF-binding finding
+  documented in authentication.md, which would require a backend
+  middleware-ordering change this task's scope excludes.
+
+---
+
+# Task 05C.2 — real Resource API integration
+
+Full write-up of the frontend repository boundary, query key strategy,
+auth-aware caching, retry policy, and known limitations lives in
+[`docs/domain/resources.md`](../domain/resources.md)'s "Frontend
+integration (Task 05C.2)" section — this covers decisions outside that
+doc's scope, plus what was found or broke along the way.
+
+## `resourceRepository` always resolves to `HttpResourceRepository`; the mock never backs production
+
+The task brief's "production must not silently fall back to mocks when
+the backend fails" is enforced structurally, not by a try/catch: there
+is no fallback code path at all. A real backend failure surfaces as a
+genuine thrown `ApiError`/network error through the query's `isError`
+state (see `features/library/resourceErrors.ts`), never an automatic
+swap to fixture data. `mockResourceRepository` stays exported and used
+directly by tests and by the MSW handlers that back them — never by
+`resourceRepository` itself.
+
+## A latent `useCurrentUser` retry bug, found under this task's new lens
+
+Task 05C.1 set `useCurrentUser`'s `retry: false` deliberately, to avoid
+a transient check from hanging the UI. Task 05C.2's explicit
+"distinguish auth failure from temporary backend unavailability"
+requirement reframed that same choice as a bug: a `5xx`/network blip on
+`/auth/me` would immediately flip `isError: true`, and `RequireAuth`
+treats that identically to "confirmed logged out" — bouncing a validly
+authenticated user to `/login` on nothing more than a dropped
+connection. Fixed with a shared, conditional retry policy
+(`shared/api/retryPolicy.ts`'s `shouldRetryTransientFailure`) applied to
+both `useCurrentUser` and the two resource hooks, rather than a one-off
+patch to just one of them. A regression test for the fixed behavior was
+added to `useCurrentUser.test.tsx` (it previously only covered the
+active-session and anonymous cases, never the "backend hiccuped"
+case).
+
+## A real Node 24+/jsdom/Vitest incompatibility, surfaced by AbortSignal propagation
+
+Threading an `AbortSignal` from TanStack Query through to `fetch`
+(`shared/api/httpClient.ts`) — needed for the task's "AbortSignal
+propagation where supported" requirement — immediately broke every
+existing `LibraryPage.test.tsx`/`ResourceDetailsPage.test.tsx` test:
+Node 24+'s native `fetch` validates `RequestInit.signal` against its
+own internal `AbortSignal` implementation, and Vitest's jsdom
+environment installs jsdom's own `AbortController`/`AbortSignal`
+polyfill as the global one — a signal created through it fails that
+check with `TypeError: RequestInit: Expected signal ("AbortSignal {}")
+to be an instance of AbortSignal`, reproducible with a bare `new
+Request(url, { signal: new AbortController().signal })`, no MSW
+involved. This is the same general class of jsdom/Node `fetch`
+incompatibility Task 01 already hit and worked around architecturally
+(splitting `router.tsx`/`routes.tsx` so `createBrowserRouter().initialize()`
+never runs in unit tests — see Task 01's "Testing strategy" entry
+above) — but architectural avoidance wasn't an option here, since the
+task explicitly requires real signal propagation. The actual fix
+(jsdom not clobbering these globals at all) lands in Vitest 4, still in
+beta and out of reach without an unplanned major-version upgrade of a
+test-tooling dependency, which is exactly the kind of change Task
+05C.1 already declined to make for MSW's own peer-dependency
+constraints. Instead, `test/setup.ts` wraps `globalThis.fetch` — after
+MSW's own interceptor installs itself, so every call still reaches
+MSW's matching logic — stripping `signal` before it ever reaches
+`fetch`'s native validation. This is confined entirely to test
+infrastructure; `shared/api/httpClient.ts` is unmodified and still
+passes the signal through for real. The one behavior this shim
+necessarily can't verify under Vitest is literal request cancellation
+reaching the network layer — covered instead by a unit test that spies
+directly on `fetch` to confirm the signal reaches the call
+(`httpResourceRepository.test.ts`) and by live browser verification
+(see the Task 05C.2 completion report).
+
+## Mock pagination changed to match the backend, not the other way around
+
+`mockResourceRepository` used to clamp `page = Math.min(query.page,
+totalPages)`; the real backend (Task 05B) always echoes back the
+requested page with an empty `items` array instead. The task brief's
+instruction to "resolve documented mock-vs-backend pagination
+differences consistently" was read as: the backend is authoritative
+now that one exists, so the mock was changed to match it, not the
+reverse — also updating the one test
+(`mockResourceRepository.test.ts`) that encoded the old clamping
+behavior. `LibraryPage` itself handles the resulting "stale/shared link
+lands past the end of the current result set" case by self-correcting
+the URL to the last real page rather than rendering a momentarily
+misleading empty-library state.
+
+## CSRF/session middleware review: no backend change
+
+A focused, read-only review of `apps/api/src/middleware/csrf.ts`,
+`validateOrigin.ts`, and the auth routes (per the task brief's explicit
+"do not modify backend authentication middleware without a
+demonstrated issue") found nothing rising above informational
+severity, and nothing new: the documented-but-dormant
+`authSessionId`-based CSRF session-binding fallback (`authentication.md`,
+"API client and CSRF handling on the frontend") is confirmed dead code
+by middleware ordering in `app.ts` (global CSRF validation runs before
+any route-level auth middleware populates `req.authSessionId`), but the
+double-submit token's core guarantee doesn't depend on it — the
+HttpOnly secret cookie being unforgeable cross-origin is what actually
+does the work. CSRF cookies are also never rotated on login/logout,
+same root cause, same non-issue for the same reason. `validateOrigin`
+and the CSRF double-submit check were confirmed to cover genuinely
+different gaps (origin spoofing vs. proof of same-origin script
+access) and remain independently effective. No backend code changed as
+a result of this review.
+
+## Out of scope for Task 05C.2 (confirmed against the task brief)
+
+- No resource create/edit/delete UI — `ResourceRepository` still only
+  has `list`/`getById`.
+- No bookmarks, no collections, no book loans, no new business
+  entities.
+- No Redux/RTK Query/custom duplicate cache; TanStack Query remains the
+  only auth/resource state store.
+- No CSS framework; no rewriting the app shell or authentication.
+- `apps/api` was not modified, including after the CSRF/session review
+  above — no demonstrated issue meant no change, per the task's own
+  instruction.
+
+## `capabilities: { canEdit, canDelete }` added to `ResourceDetailSchema`, not `ownerId` (Task 05C.3)
+
+The task brief is explicit that the backend must never expose `ownerId`
+in a Resource DTO, and that the frontend must never guess ownership
+from `creatorName`/email/`displayName`. The only way a client can
+legitimately learn "can I edit/delete this specific resource" is for
+the backend to compute it and say so directly. `resourceCapabilities()`
+(`apps/api/src/modules/resources/resource.policy.ts`) reuses the
+existing `canModifyResource` policy — unchanged, not duplicated — and
+returns `{ canEdit, canDelete }` booleans, both always equal in this
+codebase because edit and delete are the same authorization rule here.
+Added only to `ResourceDetailSchema`, not `ResourceSummarySchema`: the
+list view has no per-row management actions in this task, so adding it
+there would be speculative surface a payload nothing renders.
+`toResourceDetail`'s signature grew an `actor: Pick<PublicUser, 'id' |
+'role'> | null` parameter rather than a full `PublicUser`, because
+`getResourceById`'s read path only ever holds the narrower
+`ActorContext` shape (`{ userId, role, groupIds }`), not a full fetched
+user row — narrowing `Policy<Subject>`'s own actor parameter the same
+way (`apps/api/src/modules/auth/policy.ts`) made this a non-breaking
+change, since every existing caller already passes a full `PublicUser`,
+which still satisfies the narrower structural type.
+
+## Minimal `GET /courses` / `GET /groups` metadata endpoints added (Task 05C.3)
+
+Task 05B explicitly deferred these (see "Tags are a folksonomy; Courses
+and Groups are curated"), reasoning that nothing in the contracts or
+frontend mock called for one yet. This task's course/group picker is
+exactly that real consumer: the frontend's pre-existing `COURSES`
+fixture (`shared/data/resources/courses.ts`) used fake ids (`cs101`,
+`algo201`) that don't exist in the real database, a genuine
+incompatibility confirmed by inspection, not assumed. Both endpoints
+are read-only, unpaginated (the seed/admin-managed sets are small by
+design), and gated `requireAuth()` + `requireRole('LECTURER', 'ADMIN')`
+— a `STUDENT` has no create/edit flow that would ever need them. No
+Group or Course CRUD was added; the brief's "no overengineering backend
+metadata administration" ruled that out, and nothing downstream needs
+it.
+
+## One shared `ResourceForm`, with its own intermediate Zod schema (Task 05C.3)
+
+The brief prefers one shared form component for create and edit over
+two divergent implementations. `ResourceCreateInputSchema` (a strict
+discriminated union) and `ResourceUpdateInputSchema` (a flat, fully
+partial object) have genuinely different shapes and optionality rules,
+and fighting React Hook Form's `zodResolver` against a discriminated
+union mid-edit (while the user is still choosing a type) is a known
+source of friction. `resourceFormSchema.ts` introduces
+`ResourceFormValuesSchema` — a form-owned schema decoupled from both
+contract schemas, with a `durationMinutes: string` field (not
+`durationSeconds: number`, matching how a human types a duration) and a
+`.superRefine` for the two cross-field rules (duration required by
+type; restricted groups required when visibility is `RESTRICTED`).
+`toCreateInput`/`buildUpdateInput` are the only two places that cross
+back into the real contracts, at the actual submission boundary.
+
+## PATCH diffing via React Hook Form's own `dirtyFields` (Task 05C.3)
+
+`ResourceUpdateInputSchema` distinguishes an omitted field ("leave
+unchanged") from an explicit `null` ("clear it") — Task 05B's own
+documented semantic. `buildUpdateInput(values, dirtyFields)` reads RHF's
+`dirtyFields` (not a value-equality diff against the original) to
+decide which keys to include at all: a field the user never touched is
+omitted outright; a field they touched and then cleared is sent as an
+explicit `null`. `type` or `durationMinutes` changing always resends
+`durationSeconds` as a pair — never one without the other — so the
+backend's own cross-field invariant check (duration required/absent by
+type) always sees a self-consistent patch, never a half-updated one
+that would fail validation for a reason the user's actual edit didn't
+cause.
+
+## Lecturer-denied-editing is an in-page capability check, not a router guard (Task 05C.3)
+
+`/library/new` is gated with `<RequireRole roles={['LECTURER',
+'ADMIN']} />` at the router level — a pure role question with no
+per-resource state to resolve. `/library/:resourceId/edit` cannot be
+gated the same way: whether a given `LECTURER` may edit a given
+resource depends on ownership, which only exists once that specific
+resource has been fetched. `EditResourcePage` instead fetches the
+resource and checks `data.capabilities.canEdit` itself, rendering an
+inline "You don't have access to edit this resource" message — not a
+redirect — mirroring `RequireRole`'s own established "inline message,
+not redirect" precedent (see "`RequireRole` renders an inline 403, not
+a redirect" above). This frontend check is purely a UX nicety; the
+actual enforcement is the backend's `403` on the `PATCH` itself.
+
+## No optimistic updates for the delete mutation (Task 05C.3)
+
+The brief explicitly rules out unsafe optimistic updates for
+destructive operations. `useDeleteResourceMutation` only invalidates
+`['resources']` in `onSuccess` — the UI shows the resource as deleted
+only after the server has confirmed it, never before. Verified both by
+a dedicated hook test ("no invalidation while delete is still pending")
+and by the delete confirmation dialog's own pending/disabled state,
+which blocks a second submission until the first one resolves either
+way.
+
+## Courses/restricted-groups use the existing checkbox-grid pattern; tags use a new free-text chip input (Task 05C.3)
+
+The brief forbids introducing a new component framework just for
+multi-select. `FilterPanel.tsx`'s existing tag-checkbox-grid pattern
+already solves "pick zero or more from a small, fixed, server-sourced
+list" — reused as-is for course and restricted-group selection, both
+small curated sets fetched from the new metadata endpoints. Tags are
+different in kind, not just size: they're a folksonomy with
+find-or-create semantics (see "Tags are a folksonomy; Courses and
+Groups are curated") and no listing endpoint exists for them, so a
+checkbox grid has nothing to enumerate. `TagInput` (new) is a free-text
+chip editor instead — Enter/comma commits a tag, Backspace on an empty
+input removes the last chip, and up to 12 unused tag names already seen
+elsewhere are offered as one-click suggestion chips, without requiring
+an exhaustive tag listing endpoint the backend has no reason to have.
+
+## `beforeunload` guard, not an autosave system, for "prevent accidental data loss" (Task 05C.3)
+
+The brief explicitly rules out a complicated autosave system while
+still asking for data-loss prevention "where practical."
+`ResourceForm` adds a native `beforeunload` listener for exactly as
+long as RHF's `isDirty` is true — the lightest mechanism that satisfies
+the requirement without introducing draft persistence, debounced saves,
+or any new state machine. Confirmed working live in a real browser: an
+attempted navigation away from a dirty, unsaved form triggered Chrome's
+native "Leave site?" confirmation and blocked the navigation until
+explicitly discarded.
+
+## Out of scope for Task 05C.3 (confirmed against the task brief)
+
+- No bookmarks, collections, physical book loans, or external
+  Reel/Depot/Skill Map integrations.
+- No rewriting of authentication or the app shell.
+- No Redux/RTK Query; TanStack Query remains the only mutation/cache
+  layer.
+- No CSS framework.
+- No Group/Course CRUD API — the new metadata endpoints are read-only,
+  per "no overengineering backend metadata administration."
+- No `/tags` listing endpoint — tags keep their existing find-or-create
+  semantics with no enumeration API.
+- `capabilities` was added only to `ResourceDetailSchema`, not
+  `ResourceSummarySchema` — no per-row list-view management actions
+  exist in this task.

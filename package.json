@@ -25,7 +25,8 @@
     "db:generate": "pnpm --filter @academy-library/api db:generate",
     "db:migrate": "pnpm --filter @academy-library/api db:migrate",
     "db:migrate:deploy": "pnpm --filter @academy-library/api db:migrate:deploy",
-    "db:studio": "pnpm --filter @academy-library/api db:studio"
+    "db:studio": "pnpm --filter @academy-library/api db:studio",
+    "db:seed": "pnpm --filter @academy-library/api db:seed"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",

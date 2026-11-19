@@ -1,6 +1,7 @@
-import { afterEach, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
+import { server } from './mswServer';
 
 // vitest.config.ts doesn't enable `test.globals`, so React Testing
 // Library's own auto-cleanup (which only self-registers against a global
@@ -8,6 +9,48 @@ import '@testing-library/jest-dom/vitest';
 // into the same document without unmounting the previous one.
 afterEach(() => {
   cleanup();
+});
+
+// One MSW server for every test file. `onUnhandledRequest: 'error'` is
+// deliberate — a test that forgets to mock an endpoint it actually
+// calls should fail loudly, not silently hit (or silently fail to
+// hit) a real network. Handlers reset after each test so one test's
+// `server.use(...)` override never leaks into the next.
+beforeAll(() => {
+  server.listen({ onUnhandledRequest: 'error' });
+
+  // Node 24+'s native `fetch` validates a `RequestInit.signal` against
+  // its own internal `AbortSignal` implementation — but Vitest's jsdom
+  // environment installs jsdom's own `AbortController`/`AbortSignal`
+  // polyfill as the global one, and a signal created through it fails
+  // that check with "Expected signal to be an instance of AbortSignal."
+  // (a tracked Vitest/jsdom incompatibility, fixed in Vitest 4:
+  // https://github.com/vitest-dev/vitest/issues/8374 — this project is
+  // still on Vitest 2, pinned by `@vitest/mocker`'s `msw@^2.4.9` peer
+  // range). This app deliberately threads a TanStack Query-owned
+  // `AbortSignal` all the way to `fetch` (see `shared/api/httpClient.ts`)
+  // so real browsers can cancel superseded/unmounted requests — there's
+  // only one realm in a real browser, so this mismatch can't happen
+  // there; it's purely an artifact of this Node/jsdom test harness.
+  // Stripping the signal here, after MSW has installed its own fetch
+  // interceptor, means every call still reaches MSW's matching logic
+  // (where the incompatible signal would otherwise blow up before MSW
+  // even gets to mock or pass it through) — just without a signal MSW
+  // never had to honor in a test in the first place.
+  const interceptedFetch = globalThis.fetch;
+  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init && 'signal' in init) {
+      const { signal: _signal, ...rest } = init;
+      return interceptedFetch(input, rest);
+    }
+    return interceptedFetch(input, init);
+  };
+});
+afterEach(() => {
+  server.resetHandlers();
+});
+afterAll(() => {
+  server.close();
 });
 
 // This jsdom setup doesn't give components a fully working `localStorage`

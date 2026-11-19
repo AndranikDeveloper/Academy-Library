@@ -30,6 +30,11 @@ cp .env.example .env   # only needed for `docker compose`
 ```
 
 - `apps/api/.env` — used by `pnpm dev:api` / `pnpm --filter @academy-library/api dev`.
+  Generate a real value for `CSRF_SECRET` (the server refuses to start
+  without one — see [`docs/architecture/authentication.md`](architecture/authentication.md)):
+  ```bash
+  openssl rand -hex 32
+  ```
 - `apps/web/.env` — used by `pnpm dev:web` / Vite.
 - root `.env` — only read by `compose.yaml` when running the full stack in
   Docker; local `pnpm dev` does not use it.
@@ -106,6 +111,88 @@ Inspect data with Prisma Studio:
 ```bash
 pnpm db:studio
 ```
+
+## Development accounts (seeding)
+
+```bash
+pnpm db:seed
+```
+
+Creates one account per role — `student@academy.test` / `lecturer@academy.test`
+/ `admin@academy.test`, all with the password `DevPassword123!` unless
+overridden (`SEED_STUDENT_PASSWORD`, etc. — see `apps/api/.env.example`).
+Idempotent (safe to run repeatedly) and refuses to run with
+`NODE_ENV=production`. See
+[`docs/architecture/authentication.md`](architecture/authentication.md)
+("Development accounts") for why this is the only way to get a
+`LECTURER`/`ADMIN` account — `POST /api/v1/auth/register` can only ever
+create a `STUDENT`.
+
+As of Task 05B, the same script also seeds two `Group`s with memberships
+across the three accounts, five `Course`s, and twelve `Resource`s
+covering every resource type, difficulty, and visibility — see
+[`docs/domain/resources.md`](domain/resources.md) ("Development seed")
+for exactly what gets created and why it's safe to re-run.
+
+As of Task 05C.1, these three accounts can sign in through the real
+`/login` page (`pnpm --filter @academy-library/web dev`, then visit
+`http://localhost:5173/login`) — `admin@academy.test` lands in a real
+`ADMIN` session and can reach `/admin/*`; `student@academy.test`
+cannot, and sees `RequireRole`'s 403 message if it tries.
+
+## Running the test suite
+
+```bash
+pnpm test
+```
+
+`apps/api`'s integration tests (`tests/auth.routes.test.ts`,
+`tests/resources.routes.test.ts`, and friends) run against a **real**
+PostgreSQL database, not a mock — session expiry/revocation, the
+case-insensitive email constraint, and real full-text search/
+authorization queries are exactly the kind of behavior a mocked Prisma
+client can't exercise honestly (see
+[`docs/architecture/authentication.md`](architecture/authentication.md),
+"Database schema", and [`docs/domain/resources.md`](domain/resources.md),
+"Database schema"). Every test file that touches these tables resets
+them in its own `beforeEach` and the whole suite runs with
+`fileParallelism: false` (`apps/api/vitest.config.ts`) specifically so
+that multiple such files can safely share this one database without
+racing each other. This needs a separate database from your regular
+dev one, created once:
+
+```bash
+docker compose up -d postgres   # if not already running
+docker exec -it $(docker compose ps -q postgres) \
+  psql -U academy -d academy_library -c "CREATE DATABASE academy_library_test OWNER academy;"
+DATABASE_URL="postgresql://academy:academy@localhost:5433/academy_library_test?schema=public" \
+  pnpm --filter @academy-library/api db:migrate:deploy
+```
+
+(Adjust the port/user/password above if your root `.env` overrides
+`POSTGRES_PORT`/`POSTGRES_USER`/`POSTGRES_PASSWORD` — `apps/api/vitest.config.ts`
+hardcodes the test `DATABASE_URL` it expects, so match that exactly.)
+CI provisions the same database via a Postgres service container
+(`.github/workflows/ci.yaml`) — no manual setup needed there.
+
+`apps/web`'s tests (Task 05C.1 onward) mock the network boundary with
+MSW (`src/test/mswServer.ts`/`mswHandlers.ts`) rather than hitting a
+real API — appropriate for frontend unit/component tests, unlike
+`apps/api`'s integration tests above. For genuine browser-level
+end-to-end coverage against the real API and a real (test) database,
+see `apps/web/tests-e2e/auth.spec.ts` and run:
+
+```bash
+pnpm --filter @academy-library/web build
+DATABASE_URL="postgresql://academy:academy@localhost:5433/academy_library_test?schema=public" \
+  pnpm --filter @academy-library/api dev &
+pnpm --filter @academy-library/web preview &
+pnpm --filter @academy-library/web test:e2e
+```
+
+Never point this at your dev database — the spec registers and signs
+in real accounts it doesn't clean up, by design (each run uses a fresh,
+uniquely-generated email, so repeat runs don't collide).
 
 ## Quality gates
 
