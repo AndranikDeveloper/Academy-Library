@@ -117,15 +117,32 @@ below) share one set of attributes, defined once in `src/lib/cookies.ts`:
 
 **Cross-origin deployment** (frontend and API genuinely on separate
 origins, no reverse proxy) is explicitly not the default this app is
-tuned for. It's possible — set `CORS_ORIGIN` to the frontend's origin,
-and the existing `cors({ origin: corsOrigins, credentials: true })`
-config (never a wildcard `*` together with `credentials: true`, which
-browsers reject anyway) will serve it — but `SameSite=Lax` would then
-need to become `SameSite=None` (which _requires_ `Secure`) for the
-cookie to survive a genuine cross-site request, and the security
-properties discussed above change accordingly. That reconfiguration is
-a deliberate decision for whoever deploys this that way, not something
-this task defaults to.
+tuned for, and the recommended free-hosting topology
+(docs/deployment/free-hosting.md) avoids it entirely via a Vercel
+rewrite that makes the API appear same-origin to the browser — no
+cookie/CORS reconfiguration needed beyond adding the Vercel domain to
+`CORS_ORIGIN`. For the deliberately-unproxied alternative (the frontend
+calling the API's own, different origin directly), Task 08 added two
+paired, explicit opt-ins rather than a silent assumption:
+
+- **`COOKIE_SAME_SITE=none`** (`apps/api/src/config/env.ts`) — switches
+  every cookie this API sets from `SameSite=Lax` to `SameSite=None`, and
+  forces `Secure` on regardless of `NODE_ENV` (browsers reject
+  `SameSite=None` without `Secure`, so this fails loud over plain HTTP
+  rather than silently dropping the cookie).
+- **`VITE_API_BASE_URL`** set to the API's full, absolute origin
+  (`apps/web/src/shared/api/httpClient.ts`) — the frontend derives its
+  fetch `credentials` mode from this same variable: a relative path
+  (the default) stays `'same-origin'`; an absolute `http(s)://` URL
+  switches to `'include'` automatically, so the two can never drift out
+  of sync with each other.
+
+`CORS_ORIGIN` still needs the frontend's real origin either way (the
+existing `cors({ origin: corsOrigins, credentials: true })` config,
+never a wildcard `*` together with `credentials: true`, which browsers
+reject anyway). Choosing this path is a deliberate decision for whoever
+deploys this that way — the security properties discussed above change
+accordingly — not something this app defaults to.
 
 ## CSRF strategy
 
@@ -203,13 +220,13 @@ it. Two statuses: `ACTIVE`, `DISABLED`.
 
 ## API endpoints (`/api/v1/auth`)
 
-| Method & path     | Auth required              | Notes                                                                                |
-| ----------------- | -------------------------- | ------------------------------------------------------------------------------------ |
-| `GET /csrf-token` | No                         | Issues the CSRF token/cookie pair                                                    |
-| `POST /register`  | No (CSRF + origin checked) | Always `STUDENT`/`ACTIVE`; 409 on duplicate email; no auto-login                     |
-| `POST /login`     | No (CSRF + origin checked) | Sets the session cookie; 401 generic for bad credentials, 403 for a disabled account |
-| `POST /logout`    | No — idempotent            | Revokes the current session if any, clears the cookie, `204`                         |
-| `GET /me`         | Yes                        | Returns the current `PublicUser`; `401` if unauthenticated                           |
+| Method & path     | Auth required              | Notes                                                                                                  |
+| ----------------- | -------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `GET /csrf-token` | No                         | Issues the CSRF token/cookie pair                                                                      |
+| `POST /register`  | No (CSRF + origin checked) | Always `STUDENT`/`ACTIVE`; 409 on duplicate email; no auto-login; 403 if `REGISTRATION_ENABLED` is off |
+| `POST /login`     | No (CSRF + origin checked) | Sets the session cookie; 401 generic for bad credentials, 403 for a disabled account                   |
+| `POST /logout`    | No — idempotent            | Revokes the current session if any, clears the cookie, `204`                                           |
+| `GET /me`         | Yes                        | Returns the current `PublicUser`; `401` if unauthenticated                                             |
 
 All request/response shapes are Zod schemas in
 `packages/contracts/src/auth.ts` (`RegisterInputSchema`,
@@ -377,7 +394,17 @@ reset`) must be run through a pnpm/npm-script context
   requirements before any public production launch — a user who
   forgets their password currently has no self-service recovery path,
   and a registered email is never confirmed as reachable/owned by the
-  registrant.
+  registrant. Until either exists, `POST /auth/register` is gated by
+  `REGISTRATION_ENABLED` (`src/config/env.ts`): unset, it's on in
+  development/test and **off by default in production** — a deployment
+  that forgets to set it fails safe rather than fails open. An operator
+  who does want public self-registration on a given deployment (e.g. a
+  low-stakes public demo) sets `REGISTRATION_ENABLED=true` explicitly,
+  accepting the abuse-without-recovery tradeoff described above. With
+  registration disabled, the endpoint still exists and still accepts
+  requests (so rate limiting still applies to them) but returns a `403
+FORBIDDEN` with a message explaining why, rather than 404ing in a way
+  that would look like a routing bug.
 - **No scheduled session cleanup job.** Expired rows are deleted lazily
   on read, not proactively — harmless for correctness, a storage-growth
   consideration at real scale (see "Session lifecycle" above).

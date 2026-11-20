@@ -24,6 +24,27 @@ const EnvSchema = z.object({
     .int()
     .positive()
     .default(24 * 30),
+  // `z.coerce.boolean()` is deliberately NOT used here — it coerces via
+  // `Boolean(value)`, so the string `"false"` (non-empty) would coerce
+  // to `true`, silently defeating this exact flag. An explicit
+  // `"true"`/`"false"` enum is the only safe way to parse a boolean env
+  // var. No default on this field itself — the effective default (see
+  // `registrationEnabled` below) depends on `NODE_ENV`, which Zod can't
+  // see from inside one field's own definition.
+  REGISTRATION_ENABLED: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((value) => (value === undefined ? undefined : value === 'true')),
+  // --- Cross-origin deployment escape hatch (Task 08) ---------------------
+  // The intended topology (Docker/nginx locally, Vercel rewrites in
+  // production — see docs/deployment/free-hosting.md) keeps the browser
+  // and this API on one perceived origin, where `SameSite=Lax` is
+  // correct and sufficient (see src/lib/cookies.ts). This override exists
+  // for the deliberately-unproxied alternative — the frontend calling
+  // this API's own origin directly, with no same-origin rewrite in
+  // front — which genuinely needs `SameSite=None`. Left unset, behavior
+  // is byte-for-byte what it was before this flag existed.
+  COOKIE_SAME_SITE: z.enum(['lax', 'none', 'strict']).optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -48,3 +69,22 @@ export const env = loadEnv(process.env);
 export const corsOrigins = env.CORS_ORIGIN.split(',').map((origin) => origin.trim());
 
 export const SESSION_TTL_MS = env.SESSION_TTL_HOURS * 60 * 60 * 1000;
+
+/**
+ * Safe-by-default registration policy (Task 08): there is no email
+ * verification or password-reset flow yet (see
+ * docs/architecture/authentication.md, "Known limitations"), so letting
+ * anyone self-register on a public production deployment is a real
+ * abuse/spam surface with no recovery story. Unset `REGISTRATION_ENABLED`
+ * falls back to "on" everywhere except `NODE_ENV=production`, so local
+ * dev/test/CI behavior is unchanged without any env file edits, while a
+ * production deploy that forgets to set the var fails safe (registration
+ * off) rather than fails open. Set `REGISTRATION_ENABLED=true` explicitly
+ * to allow public self-registration on a given production deployment.
+ */
+export const registrationEnabled = env.REGISTRATION_ENABLED ?? env.NODE_ENV !== 'production';
+
+/** Default unchanged (`'lax'`) unless `COOKIE_SAME_SITE` is set — see
+ * src/lib/cookies.ts for how `'none'` also forces `Secure` regardless of
+ * `NODE_ENV`, since browsers reject `SameSite=None` without it. */
+export const cookieSameSite = env.COOKIE_SAME_SITE ?? 'lax';

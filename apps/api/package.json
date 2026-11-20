@@ -18,6 +18,8 @@
     "db:migrate:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:public-demo": "tsx prisma/seedPublicDemo.ts",
+    "db:check-invariants": "tsx scripts/checkDbInvariants.ts",
     "test:e2e:reset-db": "tsx scripts/resetAndSeedDatabase.ts"
   },
   "prisma": {

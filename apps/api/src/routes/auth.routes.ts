@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { Prisma } from '@prisma/client';
 import { LoginInputSchema, RegisterInputSchema } from '@academy-library/contracts';
 import type { AuthResponse } from '@academy-library/contracts';
+import { registrationEnabled } from '../config/env.js';
 import { AppError } from '../errors/AppError.js';
 import { BASE_COOKIE_OPTIONS, readCookie, SESSION_COOKIE_NAME } from '../lib/cookies.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
@@ -31,6 +32,12 @@ authRouter.get('/auth/csrf-token', issueCsrfToken);
  * try/catch-and-`next` wrapper needed here or in any handler below.
  */
 authRouter.post('/auth/register', authRateLimiter, async (req, res) => {
+  if (!registrationEnabled) {
+    throw AppError.forbidden(
+      'Registration is currently disabled on this instance. Please contact an administrator for access.',
+    );
+  }
+
   const input = RegisterInputSchema.parse(req.body);
 
   const existing = await findUserByEmail(input.email);

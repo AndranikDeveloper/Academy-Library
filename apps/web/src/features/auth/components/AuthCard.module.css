@@ -2,6 +2,12 @@
   display: flex;
   justify-content: center;
   padding: var(--space-8) var(--space-4) var(--space-16);
+  /* A restrained radial wash behind the card — purely decorative, built
+     entirely from existing tokens so it tracks the active theme
+     automatically rather than needing its own light/dark branches. */
+  background:
+    radial-gradient(60rem 28rem at 50% -8rem, var(--color-accent-subtle) 0%, transparent 65%),
+    var(--color-bg);
 }
 
 .card {

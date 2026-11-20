@@ -42,7 +42,7 @@ export function ResourceCard({ resource, variant }: ResourceCardProps) {
             <Badge icon={<TypeIcon aria-hidden="true" />}>{typeMeta.label}</Badge>
             <Badge variant={difficultyMeta.badgeVariant}>{difficultyMeta.label}</Badge>
             {resource.visibility === 'RESTRICTED' && (
-              <Badge variant="danger" icon={<Lock aria-hidden="true" />}>
+              <Badge variant="neutral" icon={<Lock aria-hidden="true" />}>
                 Restricted
               </Badge>
             )}

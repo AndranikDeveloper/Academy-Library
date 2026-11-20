@@ -2,6 +2,7 @@ import { useCurrentUser } from '../auth/api/useCurrentUser';
 import { ThemeToggle } from '../../app/theme/ThemeToggle';
 import { ROLE_LABELS } from '../../shared/config/roles';
 import { Avatar } from '../../shared/ui/Avatar';
+import { Badge } from '../../shared/ui/Badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../shared/ui/Card';
 import { Skeleton } from '../../shared/ui/Skeleton';
 import { PageHeader } from '../../widgets/page-header';
@@ -40,7 +41,9 @@ export function SettingsPage() {
                 <div>
                   <p className={styles.name}>{user.displayName}</p>
                   <p className={styles.email}>{user.email}</p>
-                  <p className={styles.role}>{ROLE_LABELS[user.role]}</p>
+                  <Badge variant="accent" className={styles.role}>
+                    {ROLE_LABELS[user.role]}
+                  </Badge>
                 </div>
               </>
             ) : (

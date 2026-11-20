@@ -1,5 +1,5 @@
 import type { CookieOptions, Request } from 'express';
-import { env } from '../config/env.js';
+import { cookieSameSite, env } from '../config/env.js';
 
 const isProduction = env.NODE_ENV === 'production';
 
@@ -19,22 +19,30 @@ const isProduction = env.NODE_ENV === 'production';
  *   logged-out one. See docs/architecture/authentication.md ("Cookie
  *   policy") for how this plays out in the bundled Docker Compose stack,
  *   which is a local topology mirror, not a TLS-terminated deployment.
- * - `sameSite: 'lax'` — sufficient (not merely assumed-sufficient) given
- *   the explicit "no cross-site cookie" deployment shape documented
- *   above: both local dev (via the Vite proxy) and the Compose/
- *   production shape (via the nginx reverse proxy) put the browser and
- *   the API on one origin, so this is never actually a cross-site
- *   request in the first place. CSRF protection (src/middleware/csrf.ts)
- *   is still applied on top — SameSite alone is not treated as sufficient
- *   CSRF protection, only as a sensible scope restriction on the cookie
- *   itself.
+ * - `sameSite: 'lax'` by default — sufficient (not merely
+ *   assumed-sufficient) given the explicit "no cross-site cookie"
+ *   deployment shape documented above: both local dev (via the Vite
+ *   proxy), the Compose/production shape (via the nginx reverse proxy),
+ *   and the recommended free-hosting topology (via Vercel rewrites —
+ *   see docs/deployment/free-hosting.md) put the browser and the API on
+ *   one origin, so this is never actually a cross-site request in the
+ *   first place. CSRF protection (src/middleware/csrf.ts) is still
+ *   applied on top — SameSite alone is not treated as sufficient CSRF
+ *   protection, only as a sensible scope restriction on the cookie
+ *   itself. Overridable via `COOKIE_SAME_SITE` (src/config/env.ts) for a
+ *   deliberately-unproxied cross-origin deployment, which genuinely
+ *   needs `'none'`.
+ * - `secure` is additionally forced `true` whenever `sameSite` is
+ *   `'none'`, regardless of `NODE_ENV` — browsers reject `SameSite=None`
+ *   cookies outright without `Secure`, so this fails loud (cookies
+ *   simply won't be set without HTTPS) rather than failing quiet.
  * - `path: '/'` — explicit, not left to the default-from-request-path
  *   behavior.
  */
 export const BASE_COOKIE_OPTIONS: CookieOptions = {
   httpOnly: true,
-  secure: isProduction,
-  sameSite: 'lax',
+  secure: isProduction || cookieSameSite === 'none',
+  sameSite: cookieSameSite,
   path: '/',
 };
 

@@ -6,6 +6,13 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src", "tests", "prisma/seed.ts", "scripts", "vitest.config.ts"],
+  "include": [
+    "src",
+    "tests",
+    "prisma/seed.ts",
+    "prisma/seedPublicDemo.ts",
+    "scripts",
+    "vitest.config.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }

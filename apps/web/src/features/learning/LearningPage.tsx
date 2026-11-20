@@ -1,8 +1,9 @@
 import { useNavigate } from 'react-router-dom';
-import { GraduationCap } from 'lucide-react';
+import { GraduationCap, Sparkles } from 'lucide-react';
 import { useLearningPageQuery } from './api/useLearningPageQuery';
 import { Alert } from '../../shared/ui/Alert';
 import { Button } from '../../shared/ui/Button';
+import { Card } from '../../shared/ui/Card';
 import { EmptyState } from '../../shared/ui/EmptyState';
 import { Skeleton, SkeletonText } from '../../shared/ui/Skeleton';
 import { PageHeader } from '../../widgets/page-header';
@@ -82,10 +83,19 @@ export function LearningPage() {
       ) : (
         <>
           {data.recommendations.length > 0 && (
-            <section className={styles.section} aria-labelledby="learning-recommendations-heading">
-              <h2 id="learning-recommendations-heading" className={styles.sectionTitle}>
+            <Card
+              padding="lg"
+              className={styles.recommendationsCard}
+              role="region"
+              aria-labelledby="learning-recommendations-heading"
+            >
+              <h2 id="learning-recommendations-heading" className={styles.recommendationsTitle}>
+                <Sparkles aria-hidden="true" />
                 Recommended for you
               </h2>
+              <p className={styles.recommendationsSubtitle}>
+                Based on resources you&apos;ve saved — each suggestion says exactly why.
+              </p>
               <ul className={styles.recommendationGrid}>
                 {data.recommendations.map((recommendation) => (
                   <li key={recommendation.resource.id}>
@@ -94,21 +104,24 @@ export function LearningPage() {
                   </li>
                 ))}
               </ul>
-            </section>
+            </Card>
           )}
 
-          {data.courseGroups.map((group) => (
-            <section
-              key={group.course.id}
-              className={styles.section}
-              aria-labelledby={`learning-course-${group.course.id}`}
-            >
-              <h2 id={`learning-course-${group.course.id}`} className={styles.sectionTitle}>
-                {group.course.title}
+          {data.courseGroups.length > 0 && (
+            <section className={styles.section} aria-labelledby="learning-courses-heading">
+              <h2 id="learning-courses-heading" className={styles.sectionTitle}>
+                Explore by course
               </h2>
-              <ResourceGrid resources={group.resources} view="grid" />
+              <div className={styles.courseList}>
+                {data.courseGroups.map((group) => (
+                  <div key={group.course.id}>
+                    <h3 className={styles.courseTitle}>{group.course.title}</h3>
+                    <ResourceGrid resources={group.resources} view="grid" />
+                  </div>
+                ))}
+              </div>
             </section>
-          ))}
+          )}
 
           {data.relevantCollections.length > 0 && (
             <section className={styles.section} aria-labelledby="learning-collections-heading">

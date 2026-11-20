@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Lock, Pencil, SearchX, Trash2 } from 'lucide-react';
+import { Calendar, Layers, Lock, Pencil, SearchX, Trash2 } from 'lucide-react';
 import { Alert } from '../../shared/ui/Alert';
 import { Badge } from '../../shared/ui/Badge';
 import { Button } from '../../shared/ui/Button';
@@ -21,6 +21,14 @@ import { AddResourceToCollectionPanel } from './components/AddResourceToCollecti
 import { CollectionResourceRow } from './components/CollectionResourceRow';
 import { DeleteCollectionDialog } from './components/DeleteCollectionDialog';
 import styles from './CollectionDetailsPage.module.css';
+
+function formatCreatedDate(isoDate: string): string {
+  return new Date(isoDate).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+}
 
 export function CollectionDetailsPage() {
   const { collectionId } = useParams<{ collectionId: string }>();
@@ -74,6 +82,7 @@ export function CollectionDetailsPage() {
 
   const resourceIds = data.resources.map((item) => item.resource.id);
   const isBusy = reorderMutation.isPending || removeMutation.isPending || addMutation.isPending;
+  const isRestricted = data.visibility === 'RESTRICTED';
 
   function moveItem(fromIndex: number, toIndex: number): void {
     if (!data) return;
@@ -95,8 +104,8 @@ export function CollectionDetailsPage() {
 
       <header className={styles.header}>
         <div className={styles.badgeRow}>
-          {data.visibility === 'RESTRICTED' && (
-            <Badge variant="danger" icon={<Lock aria-hidden="true" />}>
+          {isRestricted && (
+            <Badge variant="neutral" icon={<Lock aria-hidden="true" />}>
               Restricted
             </Badge>
           )}
@@ -132,76 +141,109 @@ export function CollectionDetailsPage() {
         <p className={styles.description}>{data.description}</p>
       </header>
 
-      {data.visibility === 'RESTRICTED' && (
-        <Alert variant="warning" className={styles.restrictedNote}>
-          This collection is restricted to specific groups. You can see it because you're a member
-          of one of them, or because you own it — access is enforced by the server, not just hidden
-          from navigation.
-        </Alert>
-      )}
+      <div className={styles.layout}>
+        <div className={styles.main}>
+          <section className={styles.section} aria-labelledby="collection-resources-heading">
+            <h2 id="collection-resources-heading" className={styles.sectionTitle}>
+              Resources ({data.resources.length})
+            </h2>
 
-      <section className={styles.section} aria-labelledby="collection-resources-heading">
-        <h2 id="collection-resources-heading" className={styles.sectionTitle}>
-          Resources ({data.resources.length})
-        </h2>
-
-        {data.resources.length === 0 ? (
-          <EmptyState
-            title="No resources in this collection yet"
-            description={
-              data.capabilities.canEdit
-                ? 'Use the search below to add resources.'
-                : "This collection's owner hasn't added any resources yet."
-            }
-          />
-        ) : (
-          <ul className={styles.resourceList}>
-            {data.resources.map((item, index) => (
-              <li key={item.resource.id}>
-                <CollectionResourceRow
-                  item={item}
-                  canEdit={data.capabilities.canEdit}
-                  isFirst={index === 0}
-                  isLast={index === data.resources.length - 1}
-                  isBusy={isBusy}
-                  onMoveUp={() => moveItem(index, index - 1)}
-                  onMoveDown={() => moveItem(index, index + 1)}
-                  onRemove={() =>
-                    removeMutation.mutate({ collectionId: data.id, resourceId: item.resource.id })
-                  }
-                />
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {reorderMutation.isError && (
-          <Alert variant="danger" role="alert" className={styles.mutationError}>
-            {getResourceMutationErrorMessage(reorderMutation.error)}
-          </Alert>
-        )}
-        {removeMutation.isError && (
-          <Alert variant="danger" role="alert" className={styles.mutationError}>
-            {getResourceMutationErrorMessage(removeMutation.error)}
-          </Alert>
-        )}
-
-        {data.capabilities.canEdit && (
-          <Card className={styles.addPanelCard}>
-            <CardHeader>
-              <CardTitle>Add a resource</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <AddResourceToCollectionPanel
-                existingResourceIds={resourceIds}
-                isAdding={addMutation.isPending}
-                addError={addMutation.error}
-                onAdd={(resourceId) => addMutation.mutate({ collectionId: data.id, resourceId })}
+            {data.resources.length === 0 ? (
+              <EmptyState
+                title="No resources in this collection yet"
+                description={
+                  data.capabilities.canEdit
+                    ? 'Use the search below to add resources.'
+                    : "This collection's owner hasn't added any resources yet."
+                }
               />
-            </CardContent>
+            ) : (
+              <ul className={styles.resourceList}>
+                {data.resources.map((item, index) => (
+                  <li key={item.resource.id}>
+                    <CollectionResourceRow
+                      item={item}
+                      canEdit={data.capabilities.canEdit}
+                      isFirst={index === 0}
+                      isLast={index === data.resources.length - 1}
+                      isBusy={isBusy}
+                      onMoveUp={() => moveItem(index, index - 1)}
+                      onMoveDown={() => moveItem(index, index + 1)}
+                      onRemove={() =>
+                        removeMutation.mutate({
+                          collectionId: data.id,
+                          resourceId: item.resource.id,
+                        })
+                      }
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {reorderMutation.isError && (
+              <Alert variant="danger" role="alert" className={styles.mutationError}>
+                {getResourceMutationErrorMessage(reorderMutation.error)}
+              </Alert>
+            )}
+            {removeMutation.isError && (
+              <Alert variant="danger" role="alert" className={styles.mutationError}>
+                {getResourceMutationErrorMessage(removeMutation.error)}
+              </Alert>
+            )}
+
+            {data.capabilities.canEdit && (
+              <Card className={styles.addPanelCard}>
+                <CardHeader>
+                  <CardTitle>Add a resource</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <AddResourceToCollectionPanel
+                    existingResourceIds={resourceIds}
+                    isAdding={addMutation.isPending}
+                    addError={addMutation.error}
+                    onAdd={(resourceId) =>
+                      addMutation.mutate({ collectionId: data.id, resourceId })
+                    }
+                  />
+                </CardContent>
+              </Card>
+            )}
+          </section>
+        </div>
+
+        <aside className={styles.sidebar} aria-label="Collection details">
+          <Card padding="md" className={styles.metaCard}>
+            <h2 className={styles.metaCardTitle}>At a glance</h2>
+            <dl className={styles.metaList}>
+              <div className={styles.metaItem}>
+                <dt>Resources</dt>
+                <dd>
+                  <Layers aria-hidden="true" className={styles.metaIcon} />
+                  {data.resources.length}
+                </dd>
+              </div>
+              <div className={styles.metaItem}>
+                <dt>Created</dt>
+                <dd>
+                  <Calendar aria-hidden="true" className={styles.metaIcon} />
+                  {formatCreatedDate(data.createdAt)}
+                </dd>
+              </div>
+              <div className={styles.metaItem}>
+                <dt>Visibility</dt>
+                <dd>{isRestricted ? 'Restricted' : 'Public'}</dd>
+                {isRestricted && (
+                  <p className={styles.metaCaption}>
+                    Visible to members of specific groups, and to its owner — enforced by the
+                    server, not just hidden from navigation.
+                  </p>
+                )}
+              </div>
+            </dl>
           </Card>
-        )}
-      </section>
+        </aside>
+      </div>
 
       {data.capabilities.canDelete && (
         <DeleteCollectionDialog

@@ -24,16 +24,18 @@ export function LoanRow({ loan, showBorrower = false, action }: LoanRowProps) {
   return (
     <Card padding="sm" className={styles.row}>
       <div className={styles.info}>
-        <p className={styles.title}>{loan.copy.resource.title}</p>
-        <div className={styles.meta}>
+        <div className={styles.titleRow}>
+          <p className={styles.title}>{loan.copy.resource.title}</p>
           <Badge variant="neutral">{loan.copy.inventoryCode}</Badge>
+          {loan.isOverdue && <Badge variant="danger">Overdue</Badge>}
+          {loan.status === 'RETURNED' && <Badge variant="success">Returned</Badge>}
+        </div>
+        <div className={styles.meta}>
           {showBorrower && <span className={styles.borrower}>{loan.borrower.displayName}</span>}
           <span className={styles.dates}>
             Borrowed {formatDate(loan.borrowedAt)} · Due {formatDate(loan.dueAt)}
             {loan.returnedAt && ` · Returned ${formatDate(loan.returnedAt)}`}
           </span>
-          {loan.isOverdue && <Badge variant="danger">Overdue</Badge>}
-          {loan.status === 'RETURNED' && <Badge variant="success">Returned</Badge>}
         </div>
       </div>
       {action && <div className={styles.actions}>{action}</div>}

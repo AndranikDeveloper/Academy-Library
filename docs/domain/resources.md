@@ -289,6 +289,15 @@ place via the same `resource.repository.ts` functions a real request
 would use, rather than a separate, parallel write path. Never runs with
 `NODE_ENV=production`, same guard as Task 05A.
 
+**`prisma/seedPublicDemo.ts`** (Task 08) is the production-safe sibling
+for a public deployment — explicitly the opposite of the guard above:
+it's meant to run with `NODE_ENV=production`, reuses this file's
+PUBLIC-visibility course/resource/collection fixtures only (exported
+from `seed.ts` for exactly that reason), creates exactly one `ADMIN`
+account with a randomly generated (never documented/default) password,
+and is a one-time initializer, not merely idempotent — see its own doc
+comment and docs/deployment/free-hosting.md.
+
 ## Scope decisions and contract changes (Task 05B)
 
 - **No separate `/courses` or `/tags` metadata endpoints.** The task

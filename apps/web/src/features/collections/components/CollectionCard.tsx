@@ -19,7 +19,7 @@ export function CollectionCard({ collection }: CollectionCardProps) {
         <div className={styles.body}>
           <div className={styles.metaRow}>
             {collection.visibility === 'RESTRICTED' && (
-              <Badge variant="danger" icon={<Lock aria-hidden="true" />}>
+              <Badge variant="neutral" icon={<Lock aria-hidden="true" />}>
                 Restricted
               </Badge>
             )}

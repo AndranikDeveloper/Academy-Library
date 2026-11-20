@@ -58,6 +58,19 @@ jobs:
         env:
           DATABASE_URL: postgresql://academy:academy@localhost:5433/academy_library_test?schema=public
 
+      # Guards against exactly the kind of drift `prisma migrate dev` has
+      # repeatedly proposed locally across Tasks 05B–07: the generated
+      # `searchVector` column, its GIN/trigram indexes, the
+      # case-insensitive email uniqueness index, the resource duration
+      # CHECK constraint, and the active-loan partial unique index all
+      # have no `schema.prisma` syntax, so nothing else in this pipeline
+      # would notice if a migration silently dropped one. See
+      # apps/api/scripts/checkDbInvariants.ts.
+      - name: Verify database invariants
+        run: pnpm --filter @academy-library/api db:check-invariants
+        env:
+          DATABASE_URL: postgresql://academy:academy@localhost:5433/academy_library_test?schema=public
+
       - name: Format check
         run: pnpm format:check
 

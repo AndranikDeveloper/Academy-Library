@@ -4,6 +4,22 @@ import { clearCsrfToken, getCsrfToken } from './csrfToken';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1';
 
+/**
+ * An absolute (`http(s)://`) base URL means the API is served from a
+ * different origin than this frontend — the deliberately-unproxied
+ * cross-origin fallback (see docs/deployment/free-hosting.md), paired
+ * on the API side with `COOKIE_SAME_SITE=none` (src/config/env.ts).
+ * Fetch's `'same-origin'` credentials mode would silently never send
+ * the session cookie in that case, so `'include'` is required instead.
+ * The default — a relative path, and the recommended Vercel-rewrite
+ * topology — stays `'same-origin'`, the stricter and correct choice
+ * there (see `apiRequest`'s own doc comment). Deriving this from the
+ * same `VITE_API_BASE_URL` that already decides the request URL means
+ * there's no second flag that could drift out of sync with it.
+ */
+const IS_CROSS_ORIGIN_API = /^https?:\/\//i.test(API_BASE_URL);
+const CREDENTIALS_MODE: RequestCredentials = IS_CROSS_ORIGIN_API ? 'include' : 'same-origin';
+
 const SAFE_METHODS = new Set(['GET', 'HEAD']);
 
 async function toApiError(response: Response): Promise<ApiError> {
@@ -45,13 +61,14 @@ export interface RequestOptions {
 /**
  * The one place every API call in this app goes through.
  *
- * - `credentials: 'same-origin'` — explicit, not relied on as a fetch
- *   default: this app's whole cookie-session design depends on the
- *   frontend and API always being same-origin (the Vite dev proxy
- *   locally, the nginx reverse proxy in Docker/production — see
- *   docs/architecture/authentication.md, "Cookie policy"), so this is
- *   the one credentials mode that's ever correct here. There is no
- *   cross-origin deployment this client is built to support.
+ * - `credentials` is explicit, not relied on as a fetch default: this
+ *   app's cookie-session design is built around the frontend and API
+ *   being same-origin (the Vite dev proxy locally, the nginx reverse
+ *   proxy in Docker/production, the recommended Vercel-rewrite proxy in
+ *   the free-hosting topology — see docs/architecture/authentication.md,
+ *   "Cookie policy"), where `'same-origin'` is correct. `CREDENTIALS_MODE`
+ *   above switches to `'include'` automatically when `VITE_API_BASE_URL`
+ *   points at a different origin — the deliberately-unproxied fallback.
  * - A CSRF token is attached for every method except the safe ones
  *   (`GET`/`HEAD`) — matching the backend's own `ignoredMethods` in
  *   `apps/api/src/middleware/csrf.ts` exactly.
@@ -77,7 +94,7 @@ export async function apiRequest<T>(
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method,
-    credentials: 'same-origin',
+    credentials: CREDENTIALS_MODE,
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     signal: options.signal,

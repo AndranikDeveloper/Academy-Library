@@ -9,6 +9,7 @@ import { useUnsaveResourceMutation } from '../saved/api/useUnsaveResourceMutatio
 import { Alert } from '../../shared/ui/Alert';
 import { Badge } from '../../shared/ui/Badge';
 import { Button } from '../../shared/ui/Button';
+import { Card } from '../../shared/ui/Card';
 import { Skeleton, SkeletonText } from '../../shared/ui/Skeleton';
 import { useToast } from '../../shared/ui/Toast';
 import { isSafeHttpUrl } from '../../shared/data/resources';
@@ -47,8 +48,9 @@ export function ResourceDetailsPage() {
           <Skeleton height="1.5rem" width={90} />
           <Skeleton height="1.5rem" width={90} />
         </div>
-        <div className={styles.loadingBody}>
-          <SkeletonText lines={4} />
+        <div className={styles.loadingLayout}>
+          <SkeletonText lines={5} />
+          <Skeleton height="14rem" />
         </div>
       </div>
     );
@@ -86,6 +88,8 @@ export function ResourceDetailsPage() {
   const difficultyMeta = RESOURCE_DIFFICULTY_META[data.difficulty];
   const TypeIcon = typeMeta.icon;
   const canOpenSource = isSafeHttpUrl(data.sourceUrl);
+  const hasDuration = data.type === 'VIDEO' || data.type === 'RECORDING';
+  const isRestricted = data.visibility === 'RESTRICTED';
 
   return (
     <div>
@@ -97,8 +101,8 @@ export function ResourceDetailsPage() {
         <div className={styles.badgeRow}>
           <Badge icon={<TypeIcon aria-hidden="true" />}>{typeMeta.label}</Badge>
           <Badge variant={difficultyMeta.badgeVariant}>{difficultyMeta.label}</Badge>
-          {data.visibility === 'RESTRICTED' && (
-            <Badge variant="danger" icon={<Lock aria-hidden="true" />}>
+          {isRestricted && (
+            <Badge variant="neutral" icon={<Lock aria-hidden="true" />}>
               Restricted
             </Badge>
           )}
@@ -179,86 +183,83 @@ export function ResourceDetailsPage() {
         )}
       </header>
 
-      {data.visibility === 'RESTRICTED' && (
-        <Alert variant="warning" className={styles.restrictedNote}>
-          This resource is restricted to specific groups. You can see it because you're a member of
-          one of them, or because you own it — access is enforced by the server, not just hidden
-          from navigation.
-        </Alert>
-      )}
+      <div className={styles.layout}>
+        <div className={styles.main}>
+          <section className={styles.section} aria-labelledby="resource-about-heading">
+            <h2 id="resource-about-heading" className={styles.sectionTitle}>
+              About this resource
+            </h2>
+            <p className={styles.description}>{data.description}</p>
+          </section>
 
-      <section className={styles.section} aria-labelledby="resource-about-heading">
-        <h2 id="resource-about-heading" className={styles.sectionTitle}>
-          About this resource
-        </h2>
-        <p className={styles.description}>{data.description}</p>
-      </section>
+          {data.type === 'BOOK' && <PhysicalCopiesSection resourceId={data.id} />}
+        </div>
 
-      {(data.type === 'VIDEO' ||
-        data.type === 'RECORDING' ||
-        data.publishedAt ||
-        data.publisher) && (
-        <section className={styles.section} aria-labelledby="resource-details-heading">
-          <h2 id="resource-details-heading" className={styles.sectionTitle}>
-            Details
-          </h2>
-          <dl className={styles.detailsList}>
-            {(data.type === 'VIDEO' || data.type === 'RECORDING') && (
-              <div className={styles.detailItem}>
-                <dt>Duration</dt>
-                <dd>{formatDuration(data.durationSeconds)}</dd>
+        <aside className={styles.sidebar} aria-label="Resource details">
+          <Card padding="md" className={styles.metaCard}>
+            <h2 className={styles.metaCardTitle}>At a glance</h2>
+            <dl className={styles.metaList}>
+              {hasDuration && (
+                <div className={styles.metaItem}>
+                  <dt>Duration</dt>
+                  <dd>{formatDuration(data.durationSeconds)}</dd>
+                </div>
+              )}
+              {data.publishedAt && (
+                <div className={styles.metaItem}>
+                  <dt>Published</dt>
+                  <dd>
+                    <Calendar aria-hidden="true" className={styles.metaIcon} />
+                    {formatPublishedDate(data.publishedAt)}
+                  </dd>
+                </div>
+              )}
+              {data.publisher && (
+                <div className={styles.metaItem}>
+                  <dt>Publisher</dt>
+                  <dd>{data.publisher}</dd>
+                </div>
+              )}
+              <div className={styles.metaItem}>
+                <dt>Visibility</dt>
+                <dd>{isRestricted ? 'Restricted' : 'Public'}</dd>
+                {isRestricted && (
+                  <p className={styles.metaCaption}>
+                    Visible to members of specific groups, and to its owner — enforced by the
+                    server, not just hidden from navigation.
+                  </p>
+                )}
+              </div>
+            </dl>
+
+            {data.courses.length > 0 && (
+              <div className={styles.metaChipGroup}>
+                <p className={styles.metaChipLabel}>Courses</p>
+                <ul className={styles.tagList}>
+                  {data.courses.map((course) => (
+                    <li key={course.id}>
+                      <Badge variant="neutral">{course.title}</Badge>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
-            {data.publishedAt && (
-              <div className={styles.detailItem}>
-                <dt>Published</dt>
-                <dd>
-                  <Calendar aria-hidden="true" className={styles.detailIcon} />
-                  {formatPublishedDate(data.publishedAt)}
-                </dd>
+
+            {data.tags.length > 0 && (
+              <div className={styles.metaChipGroup}>
+                <p className={styles.metaChipLabel}>Tags</p>
+                <ul className={styles.tagList}>
+                  {data.tags.map((tag) => (
+                    <li key={tag}>
+                      <Badge variant="neutral">{tag}</Badge>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
-            {data.publisher && (
-              <div className={styles.detailItem}>
-                <dt>Publisher</dt>
-                <dd>{data.publisher}</dd>
-              </div>
-            )}
-          </dl>
-        </section>
-      )}
-
-      {data.courses.length > 0 && (
-        <section className={styles.section} aria-labelledby="resource-courses-heading">
-          <h2 id="resource-courses-heading" className={styles.sectionTitle}>
-            Associated courses
-          </h2>
-          <ul className={styles.tagList}>
-            {data.courses.map((course) => (
-              <li key={course.id}>
-                <Badge variant="neutral">{course.title}</Badge>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {data.tags.length > 0 && (
-        <section className={styles.section} aria-labelledby="resource-tags-heading">
-          <h2 id="resource-tags-heading" className={styles.sectionTitle}>
-            Tags
-          </h2>
-          <ul className={styles.tagList}>
-            {data.tags.map((tag) => (
-              <li key={tag}>
-                <Badge variant="neutral">{tag}</Badge>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {data.type === 'BOOK' && <PhysicalCopiesSection resourceId={data.id} />}
+          </Card>
+        </aside>
+      </div>
 
       {data.capabilities.canDelete && (
         <DeleteResourceDialog

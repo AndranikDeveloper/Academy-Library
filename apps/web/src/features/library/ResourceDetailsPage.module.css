@@ -17,6 +17,7 @@
 
 .manageActions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin-left: auto;
 }
@@ -24,6 +25,7 @@
 .badgeRow {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-2);
   margin-bottom: var(--space-3);
 }
@@ -66,13 +68,34 @@
   height: 16px;
 }
 
-.restrictedNote {
-  margin-bottom: var(--space-6);
+/* Two-column composition: prose + interactive sections on the left,
+   a compact "at a glance" fact sheet on the right — the fix for the
+   previous single, narrow stacked column leaving most of a wide
+   viewport empty. Collapses to one column (sidebar after main) below
+   the same 1024px breakpoint the app shell's own sidebar collapses at. */
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20rem;
+  gap: var(--space-8);
+  align-items: start;
+}
+
+@media (max-width: 1023px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.main {
+  min-width: 0;
+}
+
+.sidebar {
+  min-width: 0;
 }
 
 .section {
   margin-bottom: var(--space-6);
-  max-width: 48rem;
 }
 
 .sectionTitle {
@@ -83,18 +106,33 @@
 }
 
 .description {
+  max-width: 65ch;
   color: var(--color-text-secondary);
   line-height: var(--line-height-base);
   white-space: pre-line;
 }
 
-.detailsList {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+.metaCard {
+  position: sticky;
+  top: var(--space-6);
+}
+
+.metaCardTitle {
+  margin-bottom: var(--space-4);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.metaList {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-4);
 }
 
-.detailItem dt {
+.metaItem dt {
   margin-bottom: var(--space-1);
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
@@ -102,18 +140,43 @@
   letter-spacing: 0.04em;
 }
 
-.detailItem dd {
+.metaItem dd {
   display: flex;
   align-items: center;
   gap: var(--space-1);
   color: var(--color-text-primary);
   font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
 }
 
-.detailIcon {
+.metaIcon {
   width: 14px;
   height: 14px;
   color: var(--color-text-muted);
+}
+
+/* The calm, informational alternative to a warning banner for
+   RESTRICTED visibility — a plain-language caption attached to the
+   fact itself, not a separate alarming component. */
+.metaCaption {
+  margin-top: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-snug);
+}
+
+.metaChipGroup {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.metaChipLabel {
+  margin-bottom: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .tagList {
@@ -133,8 +196,16 @@
   margin: var(--space-3) 0 var(--space-5);
 }
 
-.loadingBody {
-  max-width: 48rem;
+.loadingLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20rem;
+  gap: var(--space-8);
+}
+
+@media (max-width: 1023px) {
+  .loadingLayout {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .notFound {

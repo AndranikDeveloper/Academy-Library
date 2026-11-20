@@ -4,6 +4,7 @@ import { useCurrentUser } from '../../features/auth/api/useCurrentUser';
 import { useLogoutMutation } from '../../features/auth/api/useLogoutMutation';
 import { ROLE_LABELS } from '../../shared/config/roles';
 import { Avatar } from '../../shared/ui/Avatar';
+import { Badge } from '../../shared/ui/Badge';
 import { Dropdown, DropdownItem, DropdownMenu, DropdownTrigger } from '../../shared/ui/Dropdown';
 import { Skeleton } from '../../shared/ui/Skeleton';
 import styles from './ProfileMenu.module.css';
@@ -39,7 +40,7 @@ export function ProfileMenu() {
       <DropdownMenu align="end" className={styles.panel}>
         <div className={styles.identity}>
           <p className={styles.name}>{user.displayName}</p>
-          <p className={styles.role}>{ROLE_LABELS[user.role]}</p>
+          <Badge variant="accent">{ROLE_LABELS[user.role]}</Badge>
         </div>
         <DropdownItem icon={<Settings aria-hidden="true" />} onClick={() => navigate('/settings')}>
           Settings

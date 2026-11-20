@@ -137,7 +137,7 @@ describe('ResourceDetailsPage', () => {
     await screen.findByRole('heading', {
       name: 'Dataset: Open Course Enrollment Records (Anonymized)',
     });
-    expect(screen.getByText(/restricted to specific groups/)).toBeInTheDocument();
+    expect(screen.getByText(/members of specific groups/)).toBeInTheDocument();
     expect(screen.queryByText(/LECTURER/)).not.toBeInTheDocument();
   });
 
@@ -277,6 +277,7 @@ describe('ResourceDetailsPage', () => {
         meHandler({ ...MOCK_LECTURER_USER, role: 'STUDENT' }),
         resourceDetailHandler,
         bookmarkStatusHandler(),
+        bookCopiesHandler(),
       );
       renderAt('res-001');
 

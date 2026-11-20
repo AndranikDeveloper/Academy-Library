@@ -79,7 +79,6 @@ function AllLoansTabPanel({ status }: { status: LoanStatus }) {
                 status === 'ACTIVE' ? (
                   <Button
                     size="sm"
-                    variant="outline"
                     isLoading={returnMutation.isPending}
                     onClick={() => {
                       returnMutation.mutate(loan.id, {

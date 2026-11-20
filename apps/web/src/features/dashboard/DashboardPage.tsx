@@ -74,6 +74,7 @@ export function DashboardPage() {
             />
           </div>
 
+          <h2 className={styles.sectionTitle}>Quick actions</h2>
           <div className={styles.quickActions}>
             <Button onClick={() => navigate('/library')}>Explore the library</Button>
             <Button variant="outline" onClick={() => navigate('/saved')}>

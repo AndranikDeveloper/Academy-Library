@@ -47,7 +47,7 @@ export function CollectionResourceRow({
         <div className={styles.metaRow}>
           <Badge icon={<TypeIcon aria-hidden="true" />}>{typeMeta.label}</Badge>
           {item.resource.visibility === 'RESTRICTED' && (
-            <Badge variant="danger" icon={<Lock aria-hidden="true" />}>
+            <Badge variant="neutral" icon={<Lock aria-hidden="true" />}>
               Restricted
             </Badge>
           )}

@@ -19,6 +19,15 @@
  * See docs/architecture/authentication.md ("Development accounts") for
  * account password overrides and docs/domain/resources.md ("Development
  * seed") for the resource/group fixtures below.
+ *
+ * This script refuses to run with `NODE_ENV=production` (see `main`
+ * below) — it creates accounts with known, documented passwords and
+ * restricted/internal-looking content never meant for a public
+ * deployment. `prisma/seedPublicDemo.ts` is the production-safe sibling:
+ * it reuses this file's PUBLIC-only course/resource/collection fixtures
+ * (exported above for exactly that reason) but creates no account with
+ * a known password and seeds nothing restricted — see that file's own
+ * doc comment and docs/deployment/free-hosting.md.
  */
 import { PrismaClient } from '@prisma/client';
 import type {
@@ -146,7 +155,7 @@ async function seedMembership(userId: string, groupId: string): Promise<void> {
 // Courses
 // ---------------------------------------------------------------------
 
-const COURSE_TITLES: readonly string[] = [
+export const COURSE_TITLES: readonly string[] = [
   'Introduction to Computer Science',
   'Algorithms & Data Structures',
   'Databases at Scale',
@@ -156,7 +165,7 @@ const COURSE_TITLES: readonly string[] = [
 
 /** `Course.title` is also a real unique field — same reasoning as
  * `seedGroup`. */
-async function seedCourse(title: string): Promise<Course> {
+export async function seedCourse(title: string): Promise<Course> {
   const course = await prisma.course.upsert({ where: { title }, create: { title }, update: {} });
   logger.info(`Seeded course: ${title}`);
   return course;
@@ -166,7 +175,7 @@ async function seedCourse(title: string): Promise<Course> {
 // Resources
 // ---------------------------------------------------------------------
 
-interface ResourceSeed {
+export interface ResourceSeed {
   title: string;
   description: string;
   type: ResourceType;
@@ -193,7 +202,7 @@ interface ResourceSeed {
  * manual testing and for the integration tests to have real fixtures to
  * assert against (see tests/resources.routes.test.ts).
  */
-const RESOURCE_SEEDS: readonly ResourceSeed[] = [
+export const RESOURCE_SEEDS: readonly ResourceSeed[] = [
   {
     title: 'Introduction to Algorithms',
     description:
@@ -352,7 +361,7 @@ const RESOURCE_SEEDS: readonly ResourceSeed[] = [
   },
 ];
 
-async function seedResource(
+export async function seedResource(
   seed: ResourceSeed,
   usersByEmail: ReadonlyMap<string, User>,
   groupsByName: ReadonlyMap<string, Group>,
@@ -415,7 +424,7 @@ async function seedResource(
 // Collections (Task 06)
 // ---------------------------------------------------------------------
 
-interface CollectionSeed {
+export interface CollectionSeed {
   title: string;
   description: string;
   visibility: CollectionVisibility;
@@ -437,7 +446,7 @@ interface CollectionSeed {
  * resources are the closest thematic fit from what already exists,
  * not a claim that the content is topically exact.
  */
-const COLLECTION_SEEDS: readonly CollectionSeed[] = [
+export const COLLECTION_SEEDS: readonly CollectionSeed[] = [
   {
     title: 'Python Backend Fundamentals',
     description:
@@ -495,7 +504,7 @@ const COLLECTION_SEEDS: readonly CollectionSeed[] = [
  * `collection.repository.ts`'s real reorder logic has no bearing on a
  * script with no concurrent writers.
  */
-async function seedCollection(
+export async function seedCollection(
   seed: CollectionSeed,
   usersByEmail: ReadonlyMap<string, User>,
   groupsByName: ReadonlyMap<string, Group>,
@@ -804,11 +813,25 @@ async function main(): Promise<void> {
   logger.info(`Seeded ${LOAN_SEEDS.length} loans`);
 }
 
-main()
-  .catch((error: unknown) => {
-    logger.error({ err: error }, 'Seed failed');
-    process.exitCode = 1;
-  })
-  .finally(() => {
-    void prisma.$disconnect();
-  });
+// Guarded so importing this module's exports (COURSE_TITLES,
+// RESOURCE_SEEDS, seedResource, etc. — see prisma/seedPublicDemo.ts)
+// never also runs this file's own `main()`. ES modules execute their
+// top-level code on import, same as any other module; without this
+// guard, `seedPublicDemo.ts` importing from here would silently trigger
+// *this* file's `NODE_ENV=production` refusal (and its own
+// `process.exitCode = 1`) as a side effect of the import alone —
+// exactly the pitfall `scripts/resetAndSeedDatabase.ts`'s own doc
+// comment already flags for this same import-vs-side-effect hazard,
+// which is why that script shells out instead of importing. Runs only
+// when this file is executed directly (`tsx prisma/seed.ts` / `pnpm
+// db:seed`), not when it's merely imported.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main()
+    .catch((error: unknown) => {
+      logger.error({ err: error }, 'Seed failed');
+      process.exitCode = 1;
+    })
+    .finally(() => {
+      void prisma.$disconnect();
+    });
+}
