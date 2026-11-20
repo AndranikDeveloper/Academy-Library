@@ -12,6 +12,7 @@ import {
   addUserToGroup,
   createCourse,
   createGroup,
+  createTestBookCopy,
   createTestResource,
   createTestUser,
 } from './helpers/resourceFixtures.js';
@@ -49,7 +50,10 @@ beforeEach(async () => {
   await resetAllTables();
 });
 
+// See auth.routes.test.ts's identical `afterAll` for why this resets
+// again on the way out, not just on the way in (Task 05D).
 afterAll(async () => {
+  await resetAllTables();
   await prisma.$disconnect();
 });
 
@@ -704,6 +708,28 @@ describe('DELETE /api/v1/resources/:id', () => {
     await loginAs(client, admin.email);
     const response = await deleteWithCsrf(client, `/api/v1/resources/${resource.id}`);
     expect(response.status).toBe(204);
+  });
+
+  it('409s deleting a BOOK resource with physical copies on record (Task 07) — even an ARCHIVED one', async () => {
+    const admin = await createTestUser('ADMIN');
+    const resource = await createTestResource({
+      title: 'Has Copies',
+      ownerId: admin.id,
+      type: 'BOOK',
+    });
+    await createTestBookCopy({
+      resourceId: resource.id,
+      inventoryCode: 'INV-GUARD',
+      status: 'ARCHIVED',
+    });
+
+    const client = createTestClient(app);
+    await loginAs(client, admin.email);
+    const response = await deleteWithCsrf(client, `/api/v1/resources/${resource.id}`);
+    expect(response.status).toBe(409);
+
+    const row = await prisma.resource.findUnique({ where: { id: resource.id } });
+    expect(row).not.toBeNull();
   });
 });
 

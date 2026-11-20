@@ -14,7 +14,7 @@ import type { ActorContext, ResourceWithRelations } from './resource.types.js';
 // infer a `findMany`/`findUnique` call's actual return type (the nested
 // `tag`/`course`/`group` includes disappear from the inferred result).
 // `satisfies` checks it against that same interface without widening.
-const RESOURCE_INCLUDE = {
+export const RESOURCE_INCLUDE = {
   tags: { include: { tag: true } },
   courses: { include: { course: true } },
   groups: { include: { group: true } },
@@ -41,9 +41,13 @@ export interface ResourceSearchParams {
  * fragment instead of a JS predicate — see that function's doc comment
  * for why both exist and the maintenance cost of keeping them in sync.
  * `r` is the fixed alias every caller below uses for the `resources`
- * table.
+ * table — exported (Task 07) so any other query that joins against
+ * `resources r` can reuse the identical condition rather than
+ * re-deriving it (see `bookmark.repository.ts`'s
+ * `findVisibleSavedResourcePage`, which joins `saved_resources` to
+ * `resources r` and needs the exact same visibility rule applied).
  */
-function buildVisibilityCondition(actor: ActorContext | null): Prisma.Sql {
+export function buildVisibilityCondition(actor: ActorContext | null): Prisma.Sql {
   if (actor?.role === 'ADMIN') {
     return Prisma.sql`TRUE`;
   }
@@ -218,6 +222,17 @@ export async function hydrateResources(ids: string[]): Promise<ResourceWithRelat
 
 export function findResourceById(id: string): Promise<ResourceWithRelations | null> {
   return prisma.resource.findUnique({ where: { id }, include: RESOURCE_INCLUDE });
+}
+
+/** A standalone count, not `findVisibleResourcePage(..., { pageSize: 1
+ * }).totalItems` — that would also fetch and hydrate one full resource
+ * row only to discard it. Used by `dashboard.service.ts`'s
+ * `totalAccessibleResources` (Task 07), which needs only the number. */
+export async function countVisibleResources(actor: ActorContext | null): Promise<number> {
+  const rows = await prisma.$queryRaw<{ count: bigint }[]>(
+    Prisma.sql`SELECT COUNT(*)::bigint AS count FROM resources r WHERE ${buildVisibilityCondition(actor)}`,
+  );
+  return Number(rows[0]?.count ?? 0n);
 }
 
 export async function getUserGroupIds(userId: string): Promise<string[]> {

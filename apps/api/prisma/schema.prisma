@@ -53,6 +53,9 @@ model User {
   sessions         Session[]
   groupMemberships GroupMembership[]
   ownedResources   Resource[]
+  ownedCollections Collection[]
+  savedResources   SavedResource[]
+  loans            Loan[]
 
   @@map("users")
 }
@@ -116,8 +119,9 @@ model Group {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  memberships     GroupMembership[]
-  resourceGroups  ResourceGroup[]
+  memberships      GroupMembership[]
+  resourceGroups   ResourceGroup[]
+  collectionGroups CollectionGroup[]
 
   @@unique([name])
   @@map("groups")
@@ -232,31 +236,34 @@ model Tag {
 /// such a diff without checking it against this comment and the
 /// migration SQL first.
 model Resource {
-  id                  String             @id @default(uuid())
-  title               String             @db.VarChar(200)
-  description         String             @db.VarChar(4000)
-  type                ResourceType
-  difficulty          ResourceDifficulty
-  creatorName         String             @db.VarChar(160)
-  creatorAffiliation  String?            @db.VarChar(160)
-  coverImageUrl       String?
-  sourceUrl           String?
-  publishedAt         DateTime?
-  publisher           String?            @db.VarChar(160)
-  durationSeconds     Int?
-  visibility          ResourceVisibility @default(PUBLIC)
-  ownerId             String
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  id                 String             @id @default(uuid())
+  title              String             @db.VarChar(200)
+  description        String             @db.VarChar(4000)
+  type               ResourceType
+  difficulty         ResourceDifficulty
+  creatorName        String             @db.VarChar(160)
+  creatorAffiliation String?            @db.VarChar(160)
+  coverImageUrl      String?
+  sourceUrl          String?
+  publishedAt        DateTime?
+  publisher          String?            @db.VarChar(160)
+  durationSeconds    Int?
+  visibility         ResourceVisibility @default(PUBLIC)
+  ownerId            String
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
   /// See the model doc comment above — generated and indexed entirely in
   /// migration SQL, never written to by the application.
   searchVector Unsupported("tsvector")?
 
-  owner  User             @relation(fields: [ownerId], references: [id], onDelete: Restrict)
-  tags   ResourceTag[]
-  courses ResourceCourse[]
-  groups ResourceGroup[]
+  owner           User                 @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  tags            ResourceTag[]
+  courses         ResourceCourse[]
+  groups          ResourceGroup[]
+  collectionItems CollectionResource[]
+  savedBy         SavedResource[]
+  bookCopies      BookCopy[]
 
   @@index([ownerId])
   @@index([type])
@@ -310,4 +317,255 @@ model ResourceGroup {
   @@id([resourceId, groupId])
   @@index([groupId])
   @@map("resource_groups")
+}
+
+// ---------------------------------------------------------------------
+// Collections domain (Task 06)
+// ---------------------------------------------------------------------
+
+enum CollectionVisibility {
+  PUBLIC
+  RESTRICTED
+}
+
+/// An ordered, named grouping of resources — a reading list, a course
+/// bundle, a topic the owner curated. Deliberately reuses `Resource` and
+/// `Group` rather than duplicating anything about either: a Collection
+/// only ever *references* resources (via `CollectionResource`) and
+/// groups (via `CollectionGroup`), the same relationship shape
+/// `ResourceCourse`/`ResourceGroup` already use for Resource's own
+/// associations.
+///
+/// `ownerId` is never serialized into the public DTO — same rule as
+/// `Resource.ownerId` (see that model's doc comment and
+/// `collection.mapper.ts`): `capabilities` is the one supported way a
+/// client learns whether it may edit/delete a collection.
+///
+/// Collection visibility and a *member resource's own* visibility are
+/// independent: a PUBLIC collection can still reference a RESTRICTED
+/// resource (e.g. an instructor's own restricted exercise, bundled
+/// alongside public readings), and a viewer who can see the collection
+/// is never thereby granted access to that resource — see
+/// `collection.service.ts`'s resource-item visibility filtering, which
+/// re-checks every item against the same `isResourceVisibleTo` policy
+/// `resource.service.ts` uses, independent of how the collection itself
+/// was reached.
+model Collection {
+  id            String               @id @default(uuid())
+  title         String               @db.VarChar(200)
+  description   String               @db.VarChar(4000)
+  coverImageUrl String?
+  visibility    CollectionVisibility @default(PUBLIC)
+  ownerId       String
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  owner  User                 @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  items  CollectionResource[]
+  groups CollectionGroup[]
+
+  @@index([ownerId])
+  @@index([visibility])
+  @@index([createdAt])
+  @@map("collections")
+}
+
+/// Join table, Collection <-> Resource, with an explicit `position` for
+/// display order. The composite unique constraint on
+/// `(collectionId, resourceId)` is the DB-level guarantee that the same
+/// resource can never appear twice in one collection (Prisma's own
+/// `@@unique` — no hand-written SQL needed, unlike the Resource domain's
+/// functional/generated-column constraints).
+///
+/// `position` is deliberately *not* itself constrained unique per
+/// collection — the only writer of this column is
+/// `collection.service.ts`'s add/remove/reorder logic, which always
+/// rewrites it as a clean, gapless, zero-indexed sequence inside one
+/// transaction (see that file for the row-locking strategy that keeps
+/// concurrent reorders from interleaving). A DB-level uniqueness
+/// constraint here would need to be `DEFERRABLE` to survive the
+/// intermediate states of a multi-row position rewrite, which Prisma's
+/// schema DSL cannot express — avoided entirely by not needing it: no
+/// code path other than that service ever writes this column.
+model CollectionResource {
+  id           String   @id @default(uuid())
+  collectionId String
+  resourceId   String
+  position     Int
+  createdAt    DateTime @default(now())
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  resource   Resource   @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, resourceId])
+  @@index([collectionId, position])
+  @@index([resourceId])
+  @@map("collection_resources")
+}
+
+/// Join table, Collection <-> Group — backs a `RESTRICTED` collection's
+/// visibility, the exact same shape `ResourceGroup` already uses for
+/// Resource. A `PUBLIC` collection simply has no rows here.
+model CollectionGroup {
+  collectionId String
+  groupId      String
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  group      Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([collectionId, groupId])
+  @@index([groupId])
+  @@map("collection_groups")
+}
+
+// ---------------------------------------------------------------------
+// Bookmarks domain (Task 06)
+// ---------------------------------------------------------------------
+
+/// A user's personal "saved for later" marker on a resource — not a
+/// Collection (no ordering, no sharing, no visibility of its own) and
+/// not a loan (no due date, no physical copy). The composite unique
+/// constraint on `(userId, resourceId)` is the entire save/unsave
+/// invariant: a second save is either rejected or treated as a no-op by
+/// the service layer (see `bookmark.service.ts`), never a duplicate row.
+/// Saving a resource does not change who may *see* it — a saved
+/// resource that later becomes inaccessible (e.g. its visibility
+/// changes, or the saver loses group membership) is filtered out of
+/// `GET /bookmarks` by the same `isResourceVisibleTo` policy every other
+/// read path uses, not hidden by deleting the bookmark row itself.
+model SavedResource {
+  id         String   @id @default(uuid())
+  userId     String
+  resourceId String
+  createdAt  DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, resourceId])
+  @@index([resourceId])
+  @@map("saved_resources")
+}
+
+// ---------------------------------------------------------------------
+// Physical Library domain (Task 07) — see
+// apps/api/src/modules/physical-library/physicalLibrary.provider.ts for
+// the `PhysicalLibraryProvider` interface this domain is accessed
+// through: a local, Prisma-backed implementation today, isolated behind
+// that interface so a future `DepotProvider` (the real circulation-desk
+// system) can become the authoritative source without any route,
+// service, or frontend change — see that file's doc comment for the
+// full rationale. Every write below goes through
+// `localPhysicalLibraryProvider.ts`, the ONLY implementation registered
+// today — never a second, competing code path into these tables.
+// ---------------------------------------------------------------------
+
+enum BookCopyStatus {
+  AVAILABLE
+  ON_LOAN
+  ARCHIVED
+}
+
+enum LoanStatus {
+  ACTIVE
+  RETURNED
+}
+
+/// One physical, shelvable copy of a `BOOK`-type Resource. Only ever
+/// created for a `BOOK` resource (enforced in
+/// `localPhysicalLibraryProvider.ts`, not at the schema level — Prisma
+/// cannot express "resourceId must reference a Resource whose type is
+/// BOOK" as a constraint).
+///
+/// `inventoryCode` is the "unique inventory identifier" the task brief
+/// asks for — a real-world accession/barcode number, assigned by staff
+/// on registration, globally unique (not just per-resource) the same
+/// way a real library never reuses a barcode across titles.
+///
+/// `status` only ever transitions AVAILABLE -> ON_LOAN -> AVAILABLE
+/// (via the loan lifecycle below) or AVAILABLE -> ARCHIVED (a direct
+/// admin action, retiring a lost/damaged copy without deleting its
+/// loan history) — ARCHIVED is terminal, and ON_LOAN -> ARCHIVED is
+/// never allowed directly (a copy must be returned first). See
+/// `physicalLibrary.service.ts` for where these transitions are
+/// actually enforced; this column has no DB-level CHECK constraint
+/// restricting *which* transitions are legal, same as every other
+/// lifecycle status in this codebase (e.g. `Collection`/`Resource`
+/// have no DB-level state machine either) — the transactional service
+/// layer is the sole writer and the sole enforcer.
+model BookCopy {
+  id            String         @id @default(uuid())
+  resourceId    String
+  inventoryCode String         @db.VarChar(64)
+  status        BookCopyStatus @default(AVAILABLE)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  /// `Restrict`, not `Cascade` — deleting a Resource that still has
+  /// physical copies on record (even ARCHIVED ones, which still carry
+  /// real loan history) must fail loudly rather than silently destroy
+  /// that history. See `resource.service.ts`'s `deleteResource`, which
+  /// checks for this up front and returns a clean `409` rather than
+  /// letting this constraint surface as a raw database error — the
+  /// "handle deletion of resources with loan history safely"
+  /// requirement.
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  loans    Loan[]
+
+  @@unique([inventoryCode])
+  @@index([resourceId])
+  @@index([status])
+  @@map("book_copies")
+}
+
+/// One borrowing of one `BookCopy` by one `User`. `ACTIVE` ->
+/// `RETURNED` is the entire lifecycle — `RETURNED` is terminal, and
+/// "overdue" is deliberately NOT a stored status (it would need a
+/// background job to transition loans at midnight on their due date,
+/// which the task brief explicitly says to avoid building): it is
+/// computed at read time from `status === 'ACTIVE' && dueAt < now`,
+/// see `physicalLibrary.mapper.ts`'s `isOverdue`.
+///
+/// "Reserving" a copy (per the task brief's "borrow/reserve") IS
+/// borrowing it in this system — there is no separate hold/waitlist
+/// queue for a copy that is currently `ON_LOAN`; a copy must be
+/// `AVAILABLE` to be borrowed. A deliberate, documented scope
+/// boundary (see physicalLibrary.service.ts), not an oversight.
+///
+/// Sharp edge, same family as `Resource.searchVector`/`User`'s
+/// functional email index: a hand-written **partial unique index**
+/// guaranteeing at most one `ACTIVE` loan per copy at any time
+/// (`CREATE UNIQUE INDEX ... ON loans ("copyId") WHERE status =
+/// 'ACTIVE'`) lives only in this model's migration SQL — Prisma's
+/// schema DSL has no syntax for a partial/filtered unique index, so it
+/// is invisible here. This is defense-in-depth *underneath* the
+/// row-locked transaction that is the actual, primary guarantee (see
+/// `localPhysicalLibraryProvider.ts`'s `lockResourceForUpdate`): even a
+/// future code path that forgets to take that lock correctly cannot
+/// create two concurrent active loans for the same copy, because the
+/// database itself refuses the second insert.
+model Loan {
+  id         String     @id @default(uuid())
+  copyId     String
+  userId     String
+  status     LoanStatus @default(ACTIVE)
+  borrowedAt DateTime   @default(now())
+  dueAt      DateTime
+  returnedAt DateTime?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  /// Both `Restrict` — a loan is a historical/audit record. Neither the
+  /// copy nor the borrower can be deleted out from under it. (There is
+  /// no user-deletion feature anywhere in this codebase today, so the
+  /// `userId` restriction is schema hygiene consistent with
+  /// `Resource.ownerId`/`Collection.ownerId` rather than something any
+  /// current code path exercises.)
+  copy BookCopy @relation(fields: [copyId], references: [id], onDelete: Restrict)
+  user User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, status])
+  @@index([copyId])
+  @@index([dueAt])
+  @@map("loans")
 }

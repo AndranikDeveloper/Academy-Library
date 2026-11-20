@@ -10,6 +10,7 @@ import type {
 } from '@academy-library/contracts';
 import { AppError } from '../../errors/AppError.js';
 import { authorize } from '../auth/policy.js';
+import { localPhysicalLibraryProvider } from '../physical-library/localPhysicalLibraryProvider.js';
 import { toResourceDetail, toResourceSummary } from './resource.mapper.js';
 import {
   canCreateResource,
@@ -277,6 +278,19 @@ export async function updateResource(
   return toResourceDetail(updated, actor);
 }
 
+/**
+ * Task 07 — "handle deletion/archival of resources with loan history
+ * safely": `BookCopy.resourceId` is a `Restrict` (not `Cascade`)
+ * foreign key specifically so a raw database error is the worst case,
+ * never a silent loss of loan history — but a raw `P2003` constraint
+ * violation surfacing as an unhandled `500` isn't "safe" in the sense
+ * the task brief means, so it's checked for explicitly here and turned
+ * into a clean, actionable `409`. There is no path that lifts this
+ * protection: archiving every copy of a resource does not make it
+ * deletable again (an `ARCHIVED` copy still carries real loan history)
+ * — by design, not an oversight, see the `BookCopy` model's doc comment
+ * in schema.prisma.
+ */
 export async function deleteResource(id: string, actor: PublicUser): Promise<void> {
   const actorContext = await buildActorContext(actor);
   const existing = await findResourceById(id);
@@ -284,5 +298,13 @@ export async function deleteResource(id: string, actor: PublicUser): Promise<voi
     throw AppError.notFound('Resource not found');
   }
   authorize(canModifyResource, actor, existing);
+
+  const copyCount = await localPhysicalLibraryProvider.countCopiesForResource(id);
+  if (copyCount > 0) {
+    throw AppError.conflict(
+      'Cannot delete a resource with physical copies on record — their loan history must be preserved',
+    );
+  }
+
   await deleteResourceRow(id);
 }

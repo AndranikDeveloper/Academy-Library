@@ -1042,3 +1042,243 @@ explicitly discarded.
 - `capabilities` was added only to `ResourceDetailSchema`, not
   `ResourceSummarySchema` — no per-row list-view management actions
   exist in this task.
+
+## Root cause of leftover test-database rows: `afterAll` only disconnected, never reset (Task 05D)
+
+The reported symptom — `academy_library_test` accumulating extra
+Course/Group rows across sessions — traced to a real, demonstrated gap
+in `auth.routes.test.ts`, `metadata.routes.test.ts`, and
+`resources.routes.test.ts`: each resets every table in its own
+`beforeEach` (correct — guarantees no test depends on what an earlier
+test in the same file wrote), but each file's `afterAll` only called
+`prisma.$disconnect()`, never `resetAllTables()` again. `beforeEach`
+only protects the _next_ test in the _same_ file; nothing protected
+whatever the very last test of the very last DB-touching file wrote,
+since no later `beforeEach` in that run ever fired to clean it up.
+
+Empirically confirmed **not** to depend on file-declaration or CLI
+argument order: passing an explicit, reversed file order to `vitest
+run` on the command line made no difference — Vitest's own sequencer
+reorders files regardless (observed order: `resources.routes.test.ts`,
+`auth.routes.test.ts`, `authorization.test.ts`,
+`metadata.routes.test.ts`, then the non-DB files). This is exactly why
+the bug looked intermittent: _which_ file's last test leaked wasn't
+something a developer controlled by how they listed or ran the files.
+
+Fix: each of the three files' `afterAll` now also calls
+`resetAllTables()` before disconnecting — so whichever file genuinely
+runs last, the database still ends up empty. Verified by running the
+full suite twice consecutively, running the previously-affected file
+(`metadata.routes.test.ts`) completely alone, and confirming
+`academy_library_test` returns to zero rows in every table after each.
+Not a rewrite of the test harness — the existing `resetAllTables()`
+helper and `beforeEach` convention were already correct; this closes
+the one missing bookend.
+
+## Explicit code-level guard against resetting a non-test database (Task 05D)
+
+`apps/api/vitest.config.ts` already hardcodes the test
+`DATABASE_URL`, which is sufficient protection for a normal `pnpm
+--filter api test` run — but it only protects callers that go through
+that one config. `tests/helpers/db.ts`'s reset functions
+(`resetAllTables`/`resetAuthTables`/`resetResourceTables`) now also
+assert, at the top of each, that `DATABASE_URL` matches
+`academy_library_test`/`academy_library_e2e` and that
+`NODE_ENV !== 'production'`, throwing immediately otherwise. Added
+specifically because Task 05D introduces a _second_ caller of these
+functions outside Vitest entirely
+(`apps/api/scripts/resetAndSeedDatabase.ts`, used by Playwright's
+`globalSetup` — see below), which has no config-level pin of its own to
+rely on. Verified directly: running the reset script with
+`DATABASE_URL` pointed at `academy_library` (the real dev database)
+throws immediately and leaves it untouched, confirmed via `psql`
+before and after.
+
+## Playwright E2E gets its own database, separate from the Vitest integration-test one (Task 05D)
+
+`academy_library_test` (used by `pnpm --filter api test`) and
+`academy_library_e2e` (used by Playwright) are now two different
+databases on the same local Postgres instance — not a schema, not a
+per-worker namespace, nothing more elaborate than a second `CREATE
+DATABASE`. Chosen directly from the task brief's own suggested option
+list ("dedicated test databases") specifically to satisfy "prevent API
+tests and Playwright tests from interfering with one another": the API
+suite truncates every table it touches on every run, which would
+silently corrupt an E2E run (or a developer's live manual check — this
+is exactly how a previous session's leftover "Zoology Staff" test row
+ended up visible in a real browser) in progress against a shared
+database. A separate database makes that interference structurally
+impossible rather than a documented rule to remember not to violate.
+
+A new script, `apps/api/scripts/resetAndSeedDatabase.ts` (wired to
+`pnpm --filter api test:e2e:reset-db`), truncates then re-seeds
+whatever database `DATABASE_URL` points at — reusing the existing
+`resetAllTables()` and the existing, unmodified `db:seed` script rather
+than duplicating either. It shells out to `db:seed` as a subprocess
+specifically to avoid importing `prisma/seed.ts`'s internals: that file
+runs its own `main()` at module-load time, so importing it directly
+would run the seed twice. Playwright's `tests-e2e/globalSetup.ts` calls
+this script automatically before any test runs, via `pnpm --filter
+@academy-library/api test:e2e:reset-db` (resolved from the workspace
+root regardless of `apps/web`'s own cwd) — so every E2E run starts from
+an identical, known baseline without any manual `psql` step. Verified:
+full suite run twice consecutively, 15/15 both times, database back at
+exactly 12 resources after each.
+
+## Prisma migration drift: empirically confirmed, and confirmed non-destructive in the one way that matters (Task 05D)
+
+`schema.prisma`'s own comments already warned that `prisma migrate dev`
+might propose dropping the hand-written, migration-SQL-only objects
+(the `searchVector` GIN index, the `tags.name` trigram index, the
+`users_email_lower_key` functional index, the duration `CHECK`
+constraint) as unrecognized drift. This task verified that warning
+empirically rather than just re-stating it: applied all three existing
+migrations to a disposable database (never the dev or test one, dropped
+immediately after), then ran `prisma migrate dev --create-only` against
+it with no other schema change pending.
+
+Confirmed: Prisma proposes exactly three statements —
+`DROP INDEX "resources_search_vector_idx"`,
+`DROP INDEX "tags_name_trgm_idx"`, and
+`ALTER TABLE "resources" ALTER COLUMN "searchVector" DROP DEFAULT` —
+every time, regardless of what unrelated schema change triggered the
+diff (this is a standing mismatch between the declared schema and the
+real database, not something tied to any specific future edit). Neither
+the `CHECK` constraint nor the `users_email_lower_key` functional index
+nor the `pg_trgm` extension were ever proposed for removal — Prisma's
+diff engine doesn't track CHECK constraints or extensions at all, and
+doesn't recognize a functional/expression index as belonging to the
+column it's built from, so those three stay invisible to it entirely.
+
+Critically, actually _applying_ that generated migration (via `prisma
+migrate dev`, which validates against a shadow database first) fails
+immediately: Postgres itself rejects
+`ALTER COLUMN "searchVector" DROP DEFAULT` with `column "searchVector"
+of relation "resources" is a generated column`, and Prisma aborts
+without touching the real database. So the actual risk is **not**
+silent data loss — a developer hits a loud, immediate error and
+nothing changes. The real risk is narrower but still worth guarding
+against: if a developer, chasing that error, edited the generated
+migration to remove just the offending `ALTER COLUMN` line (Postgres's
+own error message even suggests a fix, `DROP EXPRESSION`, which only
+compounds the confusion) while keeping the two `DROP INDEX` lines, _that_
+migration would apply cleanly and silently drop both search indexes —
+a real performance regression (slower, sequential-scan search; results
+stay correct) that wouldn't error at all.
+
+No schema or migration change was made as a result of this finding —
+per the task brief, "if a safe migration strategy already exists,
+document it instead of creating unnecessary changes." The existing
+strategy already is safe in the way that matters most: CI and
+production only ever run `prisma migrate deploy` (applies committed
+migration files verbatim, never diffs or regenerates), so this risk is
+confined to a developer's own local `prisma migrate dev` the next time
+the schema changes. The concrete, now-verified remedy: if `migrate dev`
+ever proposes touching `resources_search_vector_idx`,
+`tags_name_trgm_idx`, or `searchVector`'s default, delete exactly those
+lines from the generated migration file before applying it — the rest
+of the generated diff (whatever unrelated change was actually intended)
+is fine to keep.
+
+## Playwright's `createMemoryRouter` works in this jsdom setup; `createBrowserRouter` still doesn't (Task 05D)
+
+The existing "Testing strategy" note above says a data router can't be
+mounted in unit tests at all, because `.initialize()` constructs a
+`Request`/`AbortSignal` jsdom's polyfill rejects. Re-verified
+empirically for Task 05D's `useBlocker`-based navigation guard (which
+requires a real data router) rather than assumed: `createMemoryRouter`
+
+- `RouterProvider` mounts and renders fine under this project's
+  Vitest/jsdom setup — the original note is specifically about
+  `createBrowserRouter`'s own `.initialize()` path, not every data
+  router. A new `renderWithDataRouter` test helper
+  (`apps/web/src/test/renderWithProviders.tsx`) wraps this for any test
+  that needs it; `CreateResourcePage.test.tsx`, `EditResourcePage.test.tsx`,
+  and `ResourceForm.test.tsx` all switched to it, since `ResourceForm`
+  now calls `useBlocker` unconditionally and the classic `<MemoryRouter>`
+  makes that throw ("useBlocker must be used within a data router").
+
+A second, narrower instance of the _same_ underlying jsdom/Node24/
+undici `AbortSignal` mismatch (previously documented only for this
+app's own `fetch` wrapper — see Task 05C.2's "AbortSignal propagation"
+entry) surfaced once an actual navigation was attempted inside a
+mounted data router: `@remix-run/router`'s `startNavigation` →
+`createClientSideRequest` constructs its own `new Request(url, {
+signal })` internally, using an `AbortController` created in the same
+jsdom realm, and hits the identical construction-time error. Fixed the
+same way, in the same place, for the same documented reason: `test/
+setup.ts` now also patches the global `Request` constructor to strip an
+incompatible `signal`, alongside the existing `fetch` patch — not a new
+category of workaround, the same one applied to a second call site.
+
+## In-app navigation away from a dirty `ResourceForm` is now blocked, exempting the post-success redirect (Task 05D)
+
+Confirmed the gap before fixing it: the existing `beforeunload`
+listener only fires on an actual full-page unload (tab close, refresh,
+typing a new URL) — never on a React Router client-side navigation
+(a sidebar link, the page's own "Back to..." link, browser back/forward
+while still inside the SPA), which bypasses it entirely and discards an
+unsaved form with zero warning.
+
+`useUnsavedChangesBlocker` (`features/library/`) wraps `useBlocker`,
+exempting `historyAction === NavigationType.Replace` unconditionally —
+both `CreateResourcePage` and `EditResourcePage` navigate away with
+`{ replace: true }` specifically and only on a successful submission,
+the one in-app navigation that must never be blocked. This declarative
+condition was chosen over a prop/ref-based "did the mutation just
+succeed" flag specifically to avoid a real ordering hazard: a flag set
+from a `useEffect` reacting to an `isSubmitting` prop transition isn't
+guaranteed to have committed before the parent's `onSuccess` callback
+(which calls `navigate()`) runs in the same tick, and getting that race
+wrong would mean occasionally blocking the exact navigation this
+feature must never block. `historyAction` is evaluated by the router
+itself at the moment of the navigation attempt, so there's no race to
+get wrong. `UnsavedChangesDialog` composes the existing `Modal` +
+`Button` primitives, matching `DeleteResourceDialog`'s established
+pattern — Escape and the backdrop both resolve to "stay," never to the
+discarding action. The existing `beforeunload` listener is unchanged
+and still covers the browser/tab-close half this hook doesn't.
+
+Known, accepted gap: `RequireAuth`'s own session-expiry redirect
+(`<Navigate replace>` to `/login`) is also a `REPLACE` navigation, so it
+is also exempt — a session expiring mid-edit silently discards an
+unsaved form rather than warning first. Not addressed here: blocking a
+forced logout redirect would leave the user staring at a form they can
+no longer successfully submit anyway, a worse outcome than the silent
+loss.
+
+## `RequireAuth` shows a recoverable error on a session-check failure, not a `/login` redirect (Task 05D)
+
+Re-examined the existing, deliberate "fails closed on a query error,
+not just on `null`" decision (above) against this task's "transient
+`/me` failures produce a recoverable error state rather than a
+misleading logged-out redirect" requirement, and concluded these don't
+actually conflict: the original decision's invariant is "never render
+`<Outlet/>` without a confirmed session," not "always redirect to
+`/login` specifically." `isError` (reached only after
+`useCurrentUser`'s own `shouldRetryTransientFailure` retries are
+exhausted — see Task 05C.2) now renders a `FullPageMessage` with a
+Retry button instead of `<Navigate to="/login">`; `!user` with no error
+(a confirmed `401`) still redirects exactly as before. `<Outlet/>` still
+never renders in the `isError` branch — the security boundary is
+unchanged, only which non-protected UI is shown for a transient
+backend failure versus a confirmed logout. `FullPageMessage` gained an
+optional `action` slot (a `ReactNode` rendered below the message) to
+carry the Retry button — unused by `RequireRole`'s existing 403, which
+has nothing to retry. The previously-existing test asserting the old
+"redirects to /login on error" behavior was updated to assert the new
+one, plus a new test confirming a successful retry recovers straight
+into the protected content without ever visiting `/login`.
+
+## Out of scope for Task 05D (confirmed against the task brief)
+
+- No Collections, Bookmarks, or physical book loans.
+- No Redis or queues.
+- No Redux; TanStack Query remains the only mutation/cache layer.
+- No rewriting of backend architecture — the Prisma migration review
+  (above) concluded the existing `migrate deploy`-only CI/production
+  strategy is already safe, and changed nothing about it.
+- No redesign of existing pages — `UnsavedChangesDialog` and
+  `RequireAuth`'s retry UI both compose existing `shared/ui/`
+  primitives exactly as `DeleteResourceDialog`/`RequireRole` already
+  do, not new visual patterns.

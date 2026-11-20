@@ -121,10 +121,52 @@ export const routes: RouteObject[] = [
           {
             path: 'collections',
             handle: { title: 'Collections' },
-            lazy: () =>
-              import('../../features/collections/CollectionsPage').then((m) => ({
-                Component: m.CollectionsPage,
-              })),
+            children: [
+              {
+                index: true,
+                lazy: () =>
+                  import('../../features/collections/CollectionsPage').then((m) => ({
+                    Component: m.CollectionsPage,
+                  })),
+              },
+              {
+                // Same reasoning as `/library/new` — creation has no
+                // per-collection ownership question to resolve, so a
+                // flat role gate is the whole authorization story.
+                element: <RequireRole roles={['LECTURER', 'ADMIN']} />,
+                children: [
+                  {
+                    path: 'new',
+                    handle: { title: 'Create collection' },
+                    lazy: () =>
+                      import('../../features/collections/CreateCollectionPage').then((m) => ({
+                        Component: m.CreateCollectionPage,
+                      })),
+                  },
+                ],
+              },
+              {
+                path: ':collectionId',
+                handle: { title: 'Collection details' },
+                lazy: () =>
+                  import('../../features/collections/CollectionDetailsPage').then((m) => ({
+                    Component: m.CollectionDetailsPage,
+                  })),
+              },
+              {
+                // Not role-gated here — same reasoning as
+                // `/library/:resourceId/edit`: a LECTURER may edit
+                // *their own* collections but not another's, which
+                // only the fetched collection's own
+                // `capabilities.canEdit` can answer.
+                path: ':collectionId/edit',
+                handle: { title: 'Edit collection' },
+                lazy: () =>
+                  import('../../features/collections/EditCollectionPage').then((m) => ({
+                    Component: m.EditCollectionPage,
+                  })),
+              },
+            ],
           },
           {
             path: 'saved',
@@ -188,6 +230,14 @@ export const routes: RouteObject[] = [
                     lazy: () =>
                       import('../../features/admin-users/UsersPage').then((m) => ({
                         Component: m.UsersPage,
+                      })),
+                  },
+                  {
+                    path: 'loans',
+                    handle: { title: 'Manage Loans' },
+                    lazy: () =>
+                      import('../../features/admin-loans/AdminLoansPage').then((m) => ({
+                        Component: m.AdminLoansPage,
                       })),
                   },
                 ],

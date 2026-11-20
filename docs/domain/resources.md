@@ -706,9 +706,13 @@ shows up as a normal inline field error, not a generic failure.
   enumeration.
 - No Group/Course CRUD UI — both remain seed/admin-managed only; the
   new metadata endpoints are read-only.
-- `apps/api`'s own vitest integration suite shares the same
+- ~~`apps/api`'s own vitest integration suite shares the same
   `academy_library_test` database as Playwright/manual verification and
   has no final `afterAll` cleanup, so the last test executed in a given
   `pnpm --filter api test` run can leave its own rows behind in that
-  shared database — a pre-existing property of the Task 05B-era test
-  harness, not something this task's scope covers fixing.
+  shared database~~ — fixed in Task 05D: every DB-touching test file
+  now resets again in its own `afterAll`, and Playwright E2E runs
+  against a separate, dedicated `academy_library_e2e` database rather
+  than sharing this one at all. See `docs/development.md` ("Test
+  database lifecycle and isolation strategy") and
+  `docs/architecture/decisions.md` for the full writeup.

@@ -45,6 +45,28 @@ beforeAll(() => {
     }
     return interceptedFetch(input, init);
   };
+
+  // Same incompatibility, a second call site: react-router's data router
+  // (`createMemoryRouter`, used by `useBlocker` tests — Task 05D)
+  // constructs its own `new Request(url, { signal })` internally on
+  // every navigation attempt (`startNavigation` →
+  // `createClientSideRequest`), using an `AbortController` created in
+  // this same jsdom realm — so it hits the identical jsdom-polyfill-vs.
+  // -undici mismatch as above, independent of this app's own `fetch`
+  // wrapper (`shared/api/httpClient.ts`) entirely. Patching the global
+  // `Request` constructor the same way, for the same reason, documented
+  // in the same place rather than spread across call sites.
+  const OriginalRequest = globalThis.Request;
+  globalThis.Request = class extends OriginalRequest {
+    constructor(input: RequestInfo | URL, init?: RequestInit) {
+      if (init && 'signal' in init) {
+        const { signal: _signal, ...rest } = init;
+        super(input, rest);
+      } else {
+        super(input, init);
+      }
+    }
+  };
 });
 afterEach(() => {
   server.resetHandlers();

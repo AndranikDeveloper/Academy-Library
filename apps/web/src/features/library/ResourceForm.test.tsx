@@ -2,10 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ResourceCreateInput } from '@academy-library/contracts';
+import { Link } from 'react-router-dom';
 import { server } from '../../test/mswServer';
 import { coursesHandler, groupsHandler, meHandler } from '../../test/mswHandlers';
 import { MOCK_LECTURER_USER } from '../../test/authFixtures';
-import { renderWithProviders } from '../../test/renderWithProviders';
+import { renderWithDataRouter } from '../../test/renderWithProviders';
 import { ResourceForm } from './ResourceForm';
 
 const COURSES = [
@@ -14,9 +15,41 @@ const COURSES = [
 ];
 const GROUPS = [{ id: 'group-honors', name: 'Honors Cohort' }];
 
+// `ResourceForm` calls `useBlocker` (Task 05D's unsaved-changes guard),
+// which requires a real data router — `renderWithDataRouter`, not the
+// classic `renderWithProviders`/`<MemoryRouter>`, for every render in
+// this file (see that helper's own doc comment).
 function renderCreateForm(onSubmit = vi.fn<(input: ResourceCreateInput) => void>()) {
   server.use(meHandler(MOCK_LECTURER_USER), coursesHandler(COURSES), groupsHandler(GROUPS));
-  renderWithProviders(<ResourceForm mode="create" onSubmit={onSubmit} isSubmitting={false} />);
+  renderWithDataRouter([
+    {
+      path: '/',
+      element: <ResourceForm mode="create" onSubmit={onSubmit} isSubmitting={false} />,
+    },
+  ]);
+  return onSubmit;
+}
+
+/** Renders the create form alongside a plain in-app link, so navigation
+ * tests can trigger a `PUSH` away from the form without going through
+ * either page's own submit-success `navigate(..., { replace: true })`. */
+function renderCreateFormWithNavLink(onSubmit = vi.fn<(input: ResourceCreateInput) => void>()) {
+  server.use(meHandler(MOCK_LECTURER_USER), coursesHandler(COURSES), groupsHandler(GROUPS));
+  renderWithDataRouter(
+    [
+      {
+        path: '/form',
+        element: (
+          <>
+            <Link to="/elsewhere">Go elsewhere</Link>
+            <ResourceForm mode="create" onSubmit={onSubmit} isSubmitting={false} />
+          </>
+        ),
+      },
+      { path: '/elsewhere', element: <p>Elsewhere page</p> },
+    ],
+    { route: '/form' },
+  );
   return onSubmit;
 }
 
@@ -108,36 +141,81 @@ describe('ResourceForm', () => {
     server.use(meHandler(MOCK_LECTURER_USER), coursesHandler(COURSES), groupsHandler(GROUPS));
     const onSubmit = vi.fn();
     const user = userEvent.setup();
-    renderWithProviders(
-      <ResourceForm
-        mode="edit"
-        onSubmit={onSubmit}
-        isSubmitting={false}
-        initialResource={{
-          id: 'res-1',
-          type: 'ARTICLE',
-          title: 'Existing',
-          description: 'Already here.',
-          difficulty: 'BEGINNER',
-          creator: { name: 'Jane Doe' },
-          coverImageUrl: null,
-          sourceUrl: null,
-          tags: [],
-          courses: [],
-          publishedAt: null,
-          publisher: null,
-          visibility: 'PUBLIC',
-          restrictedToGroupIds: [],
-          createdAt: '2023-01-01T00:00:00.000Z',
-          updatedAt: '2023-01-01T00:00:00.000Z',
-          capabilities: { canEdit: true, canDelete: true },
-        }}
-      />,
-    );
+    renderWithDataRouter([
+      {
+        path: '/',
+        element: (
+          <ResourceForm
+            mode="edit"
+            onSubmit={onSubmit}
+            isSubmitting={false}
+            initialResource={{
+              id: 'res-1',
+              type: 'ARTICLE',
+              title: 'Existing',
+              description: 'Already here.',
+              difficulty: 'BEGINNER',
+              creator: { name: 'Jane Doe' },
+              coverImageUrl: null,
+              sourceUrl: null,
+              tags: [],
+              courses: [],
+              publishedAt: null,
+              publisher: null,
+              visibility: 'PUBLIC',
+              restrictedToGroupIds: [],
+              createdAt: '2023-01-01T00:00:00.000Z',
+              updatedAt: '2023-01-01T00:00:00.000Z',
+              capabilities: { canEdit: true, canDelete: true },
+            }}
+          />
+        ),
+      },
+    ]);
 
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
 
     await user.type(screen.getByLabelText(/^Title/), '!');
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled();
+  });
+
+  describe('unsaved-changes navigation guard (Task 05D)', () => {
+    it('does not block in-app navigation while the form is untouched', async () => {
+      const user = userEvent.setup();
+      renderCreateFormWithNavLink();
+
+      await user.click(screen.getByRole('link', { name: 'Go elsewhere' }));
+
+      expect(await screen.findByText('Elsewhere page')).toBeInTheDocument();
+    });
+
+    it('blocks in-app navigation away from a dirty form, and "Keep editing" stays on the form', async () => {
+      const user = userEvent.setup();
+      renderCreateFormWithNavLink();
+
+      await user.type(screen.getByLabelText(/^Title/), 'Unsaved title');
+      await user.click(screen.getByRole('link', { name: 'Go elsewhere' }));
+
+      expect(await screen.findByText('Leave without saving?')).toBeInTheDocument();
+      expect(screen.queryByText('Elsewhere page')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Keep editing' }));
+
+      expect(screen.queryByText('Leave without saving?')).not.toBeInTheDocument();
+      expect(screen.getByLabelText(/^Title/)).toHaveValue('Unsaved title');
+    });
+
+    it('navigates away once the user confirms leaving without saving', async () => {
+      const user = userEvent.setup();
+      renderCreateFormWithNavLink();
+
+      await user.type(screen.getByLabelText(/^Title/), 'Unsaved title');
+      await user.click(screen.getByRole('link', { name: 'Go elsewhere' }));
+      await screen.findByText('Leave without saving?');
+
+      await user.click(screen.getByRole('button', { name: 'Leave without saving' }));
+
+      expect(await screen.findByText('Elsewhere page')).toBeInTheDocument();
+    });
   });
 });

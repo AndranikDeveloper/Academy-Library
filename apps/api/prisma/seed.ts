@@ -22,8 +22,13 @@
  */
 import { PrismaClient } from '@prisma/client';
 import type {
+  BookCopy,
+  BookCopyStatus,
+  CollectionVisibility,
   Course,
   Group,
+  LoanStatus,
+  Resource,
   ResourceDifficulty,
   ResourceType,
   ResourceVisibility,
@@ -37,7 +42,6 @@ import {
   createResource,
   updateResource,
   upsertTagsByNames,
-  type CreateResourceData,
 } from '../src/modules/resources/resource.repository.js';
 
 const prisma = new PrismaClient();
@@ -353,7 +357,7 @@ async function seedResource(
   usersByEmail: ReadonlyMap<string, User>,
   groupsByName: ReadonlyMap<string, Group>,
   coursesByTitle: ReadonlyMap<string, Course>,
-): Promise<void> {
+): Promise<Resource> {
   const owner = usersByEmail.get(normalizeEmail(seed.ownerEmail));
   if (!owner)
     throw new Error(`Seed resource "${seed.title}" references unknown owner ${seed.ownerEmail}`);
@@ -400,13 +404,343 @@ async function seedResource(
   // to keep each title's owner stable across edits for exactly that
   // reason.
   const existing = await prisma.resource.findFirst({ where: { title: seed.title } });
-  if (existing) {
-    await updateResource(existing.id, sharedFields);
-  } else {
-    const createData: CreateResourceData = { ...sharedFields, ownerId: owner.id };
-    await createResource(createData);
-  }
+  const resource = existing
+    ? await updateResource(existing.id, sharedFields)
+    : await createResource({ ...sharedFields, ownerId: owner.id });
   logger.info(`Seeded resource: ${seed.title}`);
+  return resource;
+}
+
+// ---------------------------------------------------------------------
+// Collections (Task 06)
+// ---------------------------------------------------------------------
+
+interface CollectionSeed {
+  title: string;
+  description: string;
+  visibility: CollectionVisibility;
+  restrictedToGroupNames?: string[];
+  ownerEmail: string;
+  /** Ordered — position in this array becomes each item's `position`. */
+  resourceTitles: string[];
+}
+
+/**
+ * Four named collections (per the task brief's own examples), split
+ * across both visibilities, both owning roles, and both seeded groups
+ * — exactly the variety `collections.routes.test.ts` needs real
+ * fixtures to assert visibility/ownership rules against. "Python
+ * Backend Fundamentals" and "Frontend Engineering Essentials" don't
+ * have literally-matching resources in `RESOURCE_SEEDS` (no seeded
+ * resource mentions Python, and nothing here is frontend-specific) —
+ * their titles are taken directly from the brief; the bundled
+ * resources are the closest thematic fit from what already exists,
+ * not a claim that the content is topically exact.
+ */
+const COLLECTION_SEEDS: readonly CollectionSeed[] = [
+  {
+    title: 'Python Backend Fundamentals',
+    description:
+      'A starting-point bundle for anyone moving into backend work — systems-design reading paired with a real operational war story.',
+    visibility: 'PUBLIC',
+    ownerEmail: 'admin@academy.test',
+    resourceTitles: [
+      'Career Conversations: From Bootcamp to Backend',
+      'Designing Data-Intensive Applications',
+      'Guest Lecture: Scaling Postgres at 10M QPS',
+    ],
+  },
+  {
+    title: 'Algorithms Study Materials',
+    description:
+      'The recommended order for building algorithmic intuition: watch, then read, then practice.',
+    visibility: 'PUBLIC',
+    ownerEmail: 'lecturer@academy.test',
+    resourceTitles: [
+      'Big-O Notation Explained',
+      'Introduction to Algorithms',
+      'Binary Search Practice Set',
+    ],
+  },
+  {
+    title: 'Frontend Engineering Essentials',
+    description:
+      'Honors-track supplementary materials — not for general circulation, hence the group restriction.',
+    visibility: 'RESTRICTED',
+    restrictedToGroupNames: ['Honors Cohort'],
+    ownerEmail: 'admin@academy.test',
+    resourceTitles: [
+      'Honors Thesis Proposal Template',
+      'A Gentle Introduction to Gradient Descent',
+    ],
+  },
+  {
+    title: 'Advanced Database Concepts',
+    description:
+      'Staff-only bundle: the department reading list plus internal hiring-committee context, restricted to department staff.',
+    visibility: 'RESTRICTED',
+    restrictedToGroupNames: ['CS Department Staff'],
+    ownerEmail: 'lecturer@academy.test',
+    resourceTitles: ['Designing Data-Intensive Applications', 'Faculty Hiring Committee Notes'],
+  },
+];
+
+/**
+ * Collections have no natural unique key either (same reasoning as
+ * `seedResource`) — find-by-title-then-write. Item membership/order is
+ * replaced wholesale on every re-seed (delete then recreate with
+ * fresh `position`s) rather than diffed, since this only ever runs
+ * against the small, fixed `resourceTitles` list above, not a user-
+ * facing mutation path — the atomicity/concurrency care in
+ * `collection.repository.ts`'s real reorder logic has no bearing on a
+ * script with no concurrent writers.
+ */
+async function seedCollection(
+  seed: CollectionSeed,
+  usersByEmail: ReadonlyMap<string, User>,
+  groupsByName: ReadonlyMap<string, Group>,
+  resourcesByTitle: ReadonlyMap<string, Resource>,
+): Promise<void> {
+  const owner = usersByEmail.get(normalizeEmail(seed.ownerEmail));
+  if (!owner) {
+    throw new Error(`Seed collection "${seed.title}" references unknown owner ${seed.ownerEmail}`);
+  }
+  const groupIds = (seed.restrictedToGroupNames ?? []).map((name) => {
+    const group = groupsByName.get(name);
+    if (!group) {
+      throw new Error(`Seed collection "${seed.title}" references unknown group ${name}`);
+    }
+    return group.id;
+  });
+  const resourceIds = seed.resourceTitles.map((title) => {
+    const resource = resourcesByTitle.get(title);
+    if (!resource) {
+      throw new Error(`Seed collection "${seed.title}" references unknown resource ${title}`);
+    }
+    return resource.id;
+  });
+
+  const existing = await prisma.collection.findFirst({ where: { title: seed.title } });
+
+  await prisma.$transaction(async (tx) => {
+    const collection = existing
+      ? await tx.collection.update({
+          where: { id: existing.id },
+          data: { description: seed.description, visibility: seed.visibility },
+        })
+      : await tx.collection.create({
+          data: {
+            title: seed.title,
+            description: seed.description,
+            visibility: seed.visibility,
+            ownerId: owner.id,
+          },
+        });
+
+    await tx.collectionGroup.deleteMany({ where: { collectionId: collection.id } });
+    if (groupIds.length > 0) {
+      await tx.collectionGroup.createMany({
+        data: groupIds.map((groupId) => ({ collectionId: collection.id, groupId })),
+      });
+    }
+
+    await tx.collectionResource.deleteMany({ where: { collectionId: collection.id } });
+    await tx.collectionResource.createMany({
+      data: resourceIds.map((resourceId, position) => ({
+        collectionId: collection.id,
+        resourceId,
+        position,
+      })),
+    });
+  });
+
+  logger.info(`Seeded collection: ${seed.title}`);
+}
+
+// ---------------------------------------------------------------------
+// Bookmarks (Task 06)
+// ---------------------------------------------------------------------
+
+const BOOKMARK_SEEDS: readonly { userEmail: string; resourceTitle: string }[] = [
+  { userEmail: 'student@academy.test', resourceTitle: 'Introduction to Algorithms' },
+  { userEmail: 'student@academy.test', resourceTitle: 'Big-O Notation Explained' },
+  { userEmail: 'lecturer@academy.test', resourceTitle: 'Designing Data-Intensive Applications' },
+];
+
+async function seedBookmark(
+  seed: { userEmail: string; resourceTitle: string },
+  usersByEmail: ReadonlyMap<string, User>,
+  resourcesByTitle: ReadonlyMap<string, Resource>,
+): Promise<void> {
+  const user = usersByEmail.get(normalizeEmail(seed.userEmail));
+  const resource = resourcesByTitle.get(seed.resourceTitle);
+  if (!user || !resource) {
+    throw new Error(
+      `Seed bookmark references unknown user ${seed.userEmail} or resource ${seed.resourceTitle}`,
+    );
+  }
+  await prisma.savedResource.upsert({
+    where: { userId_resourceId: { userId: user.id, resourceId: resource.id } },
+    create: { userId: user.id, resourceId: resource.id },
+    update: {},
+  });
+}
+
+// ---------------------------------------------------------------------
+// Physical Library (Task 07)
+// ---------------------------------------------------------------------
+
+interface BookCopySeed {
+  resourceTitle: string;
+  inventoryCode: string;
+  status?: BookCopyStatus;
+}
+
+/** Three of the `BOOK`-type resources above get physical copies — not
+ * every resource, since only `BOOK` resources can have any (see
+ * `physicalLibrary.service.ts`'s `requireBookType`). One copy is left
+ * `ARCHIVED` (a retired/damaged copy whose loan history still needs
+ * somewhere to live) specifically so the seed demonstrates that state
+ * exists, not just AVAILABLE/ON_LOAN. */
+const BOOK_COPY_SEEDS: readonly BookCopySeed[] = [
+  { resourceTitle: 'Introduction to Algorithms', inventoryCode: 'INV-ALG-001' },
+  { resourceTitle: 'Introduction to Algorithms', inventoryCode: 'INV-ALG-002' },
+  { resourceTitle: 'Introduction to Algorithms', inventoryCode: 'INV-ALG-003' },
+  { resourceTitle: 'Designing Data-Intensive Applications', inventoryCode: 'INV-DDIA-001' },
+  {
+    resourceTitle: 'Designing Data-Intensive Applications',
+    inventoryCode: 'INV-DDIA-002',
+    status: 'ARCHIVED',
+  },
+  { resourceTitle: 'Advanced Systems Design Reading List', inventoryCode: 'INV-ASDRL-001' },
+];
+
+/** `inventoryCode` is a real, Prisma-declared unique field — a genuine
+ * `upsert`, same reasoning as `seedGroup`/`seedCourse`. */
+async function seedBookCopy(
+  seed: BookCopySeed,
+  resourcesByTitle: ReadonlyMap<string, Resource>,
+): Promise<BookCopy> {
+  const resource = resourcesByTitle.get(seed.resourceTitle);
+  if (!resource) {
+    throw new Error(`Seed book copy references unknown resource ${seed.resourceTitle}`);
+  }
+  const copy = await prisma.bookCopy.upsert({
+    where: { inventoryCode: seed.inventoryCode },
+    create: {
+      resourceId: resource.id,
+      inventoryCode: seed.inventoryCode,
+      status: seed.status ?? 'AVAILABLE',
+    },
+    // Reapplies this copy's base status on every re-run too — safe
+    // because `seedLoan` below runs *after* every `seedBookCopy` call
+    // and unconditionally sets `ON_LOAN`/`AVAILABLE` for whichever
+    // copies `LOAN_SEEDS` references, so its pass is always the last,
+    // authoritative write for a loan-involved copy regardless of what
+    // this upsert just set.
+    update: { resourceId: resource.id, status: seed.status ?? 'AVAILABLE' },
+  });
+  logger.info(`Seeded book copy: ${seed.inventoryCode} (${seed.resourceTitle})`);
+  return copy;
+}
+
+interface LoanSeed {
+  copyInventoryCode: string;
+  userEmail: string;
+  status: LoanStatus;
+  /** Days relative to "now" this seed runs — kept relative (not a fixed
+   * ISO date) so a loan seeded as "overdue" or "due soon" stays overdue
+   * or due soon no matter when `prisma db seed` actually runs. */
+  borrowedDaysAgo: number;
+  dueDaysFromNow: number;
+  returned?: boolean;
+}
+
+/**
+ * Three loans covering every state the UI needs real fixtures for: an
+ * active loan safely within its period, an overdue active loan (to show
+ * `isOverdue` live), and a returned loan (loan history). Each also
+ * flips its copy's `status` to match — `ON_LOAN` for the two active
+ * loans, left `AVAILABLE` for the returned one — since a loan and its
+ * copy's status must never disagree with each other, the same invariant
+ * `localPhysicalLibraryProvider.ts`'s real borrow/return transactions
+ * maintain.
+ */
+const LOAN_SEEDS: readonly LoanSeed[] = [
+  {
+    copyInventoryCode: 'INV-ALG-002',
+    userEmail: 'student@academy.test',
+    status: 'ACTIVE',
+    borrowedDaysAgo: 3,
+    dueDaysFromNow: 18,
+  },
+  {
+    copyInventoryCode: 'INV-ASDRL-001',
+    userEmail: 'admin@academy.test',
+    status: 'ACTIVE',
+    borrowedDaysAgo: 26,
+    dueDaysFromNow: -5,
+  },
+  {
+    copyInventoryCode: 'INV-DDIA-001',
+    userEmail: 'lecturer@academy.test',
+    status: 'RETURNED',
+    borrowedDaysAgo: 40,
+    dueDaysFromNow: -19,
+    returned: true,
+  },
+];
+
+function daysFromNow(days: number): Date {
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+}
+
+/** No natural unique key for a `Loan` at the schema level — identified
+ * here, for this seed script only, by its (copy, user) pair, which is
+ * unique across `LOAN_SEEDS` by construction. Re-seeding updates the
+ * existing row's dates in place rather than creating a second loan for
+ * the same pair. */
+async function seedLoan(
+  seed: LoanSeed,
+  usersByEmail: ReadonlyMap<string, User>,
+  copiesByInventoryCode: ReadonlyMap<string, BookCopy>,
+): Promise<void> {
+  const user = usersByEmail.get(normalizeEmail(seed.userEmail));
+  const copy = copiesByInventoryCode.get(seed.copyInventoryCode);
+  if (!user || !copy) {
+    throw new Error(
+      `Seed loan references unknown user ${seed.userEmail} or copy ${seed.copyInventoryCode}`,
+    );
+  }
+
+  const borrowedAt = daysFromNow(-seed.borrowedDaysAgo);
+  const dueAt = daysFromNow(seed.dueDaysFromNow);
+  const returnedAt = seed.returned ? daysFromNow(seed.dueDaysFromNow - 2) : null;
+
+  const existing = await prisma.loan.findFirst({ where: { copyId: copy.id, userId: user.id } });
+  if (existing) {
+    await prisma.loan.update({
+      where: { id: existing.id },
+      data: { status: seed.status, borrowedAt, dueAt, returnedAt },
+    });
+  } else {
+    await prisma.loan.create({
+      data: {
+        copyId: copy.id,
+        userId: user.id,
+        status: seed.status,
+        borrowedAt,
+        dueAt,
+        returnedAt,
+      },
+    });
+  }
+
+  await prisma.bookCopy.update({
+    where: { id: copy.id },
+    data: { status: seed.status === 'ACTIVE' ? 'ON_LOAN' : 'AVAILABLE' },
+  });
+  logger.info(`Seeded loan: ${seed.copyInventoryCode} -> ${seed.userEmail} (${seed.status})`);
 }
 
 async function main(): Promise<void> {
@@ -442,9 +776,32 @@ async function main(): Promise<void> {
     coursesByTitle.set(title, await seedCourse(title));
   }
 
+  const resourcesByTitle = new Map<string, Resource>();
   for (const seed of RESOURCE_SEEDS) {
-    await seedResource(seed, usersByEmail, groupsByName, coursesByTitle);
+    resourcesByTitle.set(
+      seed.title,
+      await seedResource(seed, usersByEmail, groupsByName, coursesByTitle),
+    );
   }
+
+  for (const seed of COLLECTION_SEEDS) {
+    await seedCollection(seed, usersByEmail, groupsByName, resourcesByTitle);
+  }
+
+  for (const seed of BOOKMARK_SEEDS) {
+    await seedBookmark(seed, usersByEmail, resourcesByTitle);
+  }
+  logger.info(`Seeded ${BOOKMARK_SEEDS.length} bookmarks`);
+
+  const copiesByInventoryCode = new Map<string, BookCopy>();
+  for (const seed of BOOK_COPY_SEEDS) {
+    copiesByInventoryCode.set(seed.inventoryCode, await seedBookCopy(seed, resourcesByTitle));
+  }
+
+  for (const seed of LOAN_SEEDS) {
+    await seedLoan(seed, usersByEmail, copiesByInventoryCode);
+  }
+  logger.info(`Seeded ${LOAN_SEEDS.length} loans`);
 }
 
 main()

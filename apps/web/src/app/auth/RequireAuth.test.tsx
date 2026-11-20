@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { Outlet, Route, Routes } from 'react-router-dom';
 import { server } from '../../test/mswServer';
@@ -45,7 +46,12 @@ describe('RequireAuth', () => {
     expect(await screen.findByText('Login page')).toBeInTheDocument();
   });
 
-  it('redirects to /login when the session check itself errors (fail closed)', async () => {
+  it('shows a recoverable error, not a /login redirect, when the session check itself fails (Task 05D)', async () => {
+    // Fails closed exactly as before — `isError` never renders
+    // `<Outlet/>` — but shows a "try again" state instead of /login,
+    // since this is a `5xx`, not a confirmed `401`: a still-logged-in
+    // user shouldn't be told they're logged out (see RequireAuth.tsx's
+    // own doc comment, and docs/architecture/decisions.md).
     server.use(
       csrfTokenHandler,
       http.get('/api/v1/auth/me', () =>
@@ -57,6 +63,34 @@ describe('RequireAuth', () => {
     );
     renderProtected();
 
-    expect(await screen.findByText('Login page')).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't verify your session")).toBeInTheDocument();
+    expect(screen.queryByText('Login page')).not.toBeInTheDocument();
+    expect(screen.queryByText('Protected dashboard')).not.toBeInTheDocument();
+  });
+
+  it('recovers into the protected content once a retry succeeds, without ever visiting /login', async () => {
+    let shouldFail = true;
+    server.use(
+      csrfTokenHandler,
+      http.get('/api/v1/auth/me', () => {
+        if (shouldFail) {
+          return HttpResponse.json(
+            { error: { message: 'Internal server error', code: 'INTERNAL_SERVER_ERROR' } },
+            { status: 500 },
+          );
+        }
+        return HttpResponse.json({ user: MOCK_STUDENT_USER });
+      }),
+    );
+    const user = userEvent.setup();
+    renderProtected();
+
+    expect(await screen.findByText("Couldn't verify your session")).toBeInTheDocument();
+
+    shouldFail = false;
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(await screen.findByText('Protected dashboard')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Login page')).not.toBeInTheDocument());
   });
 });

@@ -154,11 +154,7 @@ authorization queries are exactly the kind of behavior a mocked Prisma
 client can't exercise honestly (see
 [`docs/architecture/authentication.md`](architecture/authentication.md),
 "Database schema", and [`docs/domain/resources.md`](domain/resources.md),
-"Database schema"). Every test file that touches these tables resets
-them in its own `beforeEach` and the whole suite runs with
-`fileParallelism: false` (`apps/api/vitest.config.ts`) specifically so
-that multiple such files can safely share this one database without
-racing each other. This needs a separate database from your regular
+"Database schema"). This needs a separate database from your regular
 dev one, created once:
 
 ```bash
@@ -175,24 +171,93 @@ hardcodes the test `DATABASE_URL` it expects, so match that exactly.)
 CI provisions the same database via a Postgres service container
 (`.github/workflows/ci.yaml`) — no manual setup needed there.
 
-`apps/web`'s tests (Task 05C.1 onward) mock the network boundary with
-MSW (`src/test/mswServer.ts`/`mswHandlers.ts`) rather than hitting a
-real API — appropriate for frontend unit/component tests, unlike
-`apps/api`'s integration tests above. For genuine browser-level
-end-to-end coverage against the real API and a real (test) database,
-see `apps/web/tests-e2e/auth.spec.ts` and run:
+### Test database lifecycle and isolation strategy (Task 05D)
+
+Every API test file that touches the database resets its own tables
+(`tests/helpers/db.ts`'s `resetAllTables()`) in **both** `beforeEach`
+_and_ `afterAll` — before each test (so no test depends on what an
+earlier test in the same file left behind) and once more after the
+file's last test (so nothing that file wrote survives the file itself).
+The whole suite also runs with `fileParallelism: false`
+(`apps/api/vitest.config.ts`), so these files never race each other
+over the same tables.
+
+That `afterAll` reset is the actual fix for the "leftover Course/Group
+rows" issue this task was asked to resolve: `beforeEach` alone only
+protects the _next_ test in the _same_ file — whichever DB-touching
+file Vitest's own sequencer happens to run **last** (empirically not a
+fixed order — see `docs/architecture/decisions.md`, Task 05D) left its
+final test's rows sitting in `academy_library_test` indefinitely, since
+nothing ever ran afterward to clean them up. Confirmed fixed: the full
+suite was run twice consecutively, with files in a different order, and
+with the originally-affected file (`metadata.routes.test.ts`) run
+completely alone — every table in `academy_library_test` is back to
+zero rows after any of these, every time.
+
+`tests/helpers/db.ts`'s reset functions also carry an explicit
+code-level guard (`assertDisposableTestDatabase()`): they throw rather
+than run if `DATABASE_URL` doesn't look like `academy_library_test`/
+`academy_library_e2e`, or if `NODE_ENV=production`. This is defense in
+depth alongside `vitest.config.ts`'s own hardcoded test `DATABASE_URL`
+— the config pin protects a normal `pnpm --filter api test` run; the
+code-level guard protects every other caller of these functions,
+including the E2E reset script below, which has no such config to lean
+on.
+
+**`apps/web`'s tests** (Task 05C.1 onward) mock the network boundary
+with MSW (`src/test/mswServer.ts`/`mswHandlers.ts`) rather than hitting
+a real API — appropriate for frontend unit/component tests, unlike
+`apps/api`'s integration tests above.
+
+For genuine browser-level end-to-end coverage against the real API, see
+`apps/web/tests-e2e/`. This uses its **own**, separate database —
+`academy_library_e2e`, never `academy_library_test` — created the same
+one-time way:
+
+```bash
+docker exec -it $(docker compose ps -q postgres) \
+  psql -U academy -d academy_library -c "CREATE DATABASE academy_library_e2e OWNER academy;"
+DATABASE_URL="postgresql://academy:academy@localhost:5433/academy_library_e2e?schema=public" \
+  pnpm --filter @academy-library/api db:migrate:deploy
+```
+
+The two E2E databases are intentionally not the same one: `pnpm
+--filter api test` truncates every table it touches on every run, and
+would silently corrupt an E2E run (or a developer's manual
+browser-based check) in progress against a shared database. Giving each
+its own database makes that interference structurally impossible rather
+than relying on "don't run both at once."
+
+Run the suite:
 
 ```bash
 pnpm --filter @academy-library/web build
-DATABASE_URL="postgresql://academy:academy@localhost:5433/academy_library_test?schema=public" \
+DATABASE_URL="postgresql://academy:academy@localhost:5433/academy_library_e2e?schema=public" \
+  NODE_ENV=test CORS_ORIGIN="http://localhost:5173,http://localhost:4173" \
   pnpm --filter @academy-library/api dev &
 pnpm --filter @academy-library/web preview &
-pnpm --filter @academy-library/web test:e2e
+DATABASE_URL="postgresql://academy:academy@localhost:5433/academy_library_e2e?schema=public" \
+  pnpm --filter @academy-library/web test:e2e
 ```
 
-Never point this at your dev database — the spec registers and signs
-in real accounts it doesn't clean up, by design (each run uses a fresh,
-uniquely-generated email, so repeat runs don't collide).
+`playwright.config.ts`'s `globalSetup` (`tests-e2e/globalSetup.ts`)
+truncates and re-seeds `academy_library_e2e` automatically before any
+test runs — via `apps/api`'s `pnpm test:e2e:reset-db`
+(`apps/api/scripts/resetAndSeedDatabase.ts`), which reuses the same
+`resetAllTables()` the API's own tests use, then runs the existing
+`db:seed` script. This is what makes repeated E2E runs produce
+consistent results without any manual `psql` cleanup: every run starts
+from the identical 3-account/12-resource baseline, regardless of what a
+previous run (or a test that crashed before its own cleanup) left
+behind. Confirmed: the full Playwright suite was run twice
+consecutively — 15/15 both times — with the database back at exactly
+12 resources after each.
+
+Still never point any of this at your dev database (`academy_library`)
+— besides the explicit guard described above, the E2E specs also
+register real accounts with fresh, uniquely-generated emails each run
+that are never cleaned up, by design (so repeat runs don't collide on
+email uniqueness).
 
 ## Quality gates
 

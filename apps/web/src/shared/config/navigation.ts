@@ -1,5 +1,6 @@
 import {
   BookCopy,
+  BookOpenCheck,
   Bookmark,
   FolderCog,
   GraduationCap,
@@ -39,6 +40,7 @@ export const SECONDARY_NAV: readonly NavItem[] = [
 export const ADMIN_NAV: readonly NavItem[] = [
   { label: 'Admin Dashboard', to: '/admin', icon: ShieldCheck, roles: ['ADMIN'] },
   { label: 'Manage Resources', to: '/admin/resources', icon: FolderCog, roles: ['ADMIN'] },
+  { label: 'Manage Loans', to: '/admin/loans', icon: BookOpenCheck, roles: ['ADMIN'] },
   { label: 'Users', to: '/admin/users', icon: Users, roles: ['ADMIN'] },
 ];
 

@@ -58,7 +58,17 @@ beforeEach(async () => {
   await resetAllTables();
 });
 
+// Resets tables again on the way out, not just `prisma.$disconnect()` —
+// `beforeEach` only cleans up *before* the next test in *this* file, so
+// without this, whichever DB-touching file Vitest happens to run last
+// (file order isn't fixed across runs — see docs/development.md, "Test
+// database lifecycle") leaves its final test's rows sitting in the
+// shared test database indefinitely, visible to the next `pnpm test`
+// run's first test, a Playwright run, or a developer poking at the
+// database directly. Task 05D — the originally-reported symptom
+// (leftover Course/Group rows) traced to exactly this gap.
 afterAll(async () => {
+  await resetAllTables();
   await prisma.$disconnect();
 });
 

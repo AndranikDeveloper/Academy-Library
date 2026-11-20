@@ -1,3 +1,38 @@
-.panel {
-  padding-top: var(--space-2);
+.section {
+  margin-bottom: var(--space-8);
+}
+
+.sectionTitle {
+  margin-bottom: var(--space-4);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.recommendationGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-5);
+  list-style: none;
+}
+
+.reason {
+  margin-top: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.collectionGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-5);
+}
+
+.retryRow {
+  margin-top: var(--space-3);
+}
+
+.loadingBody {
+  max-width: 48rem;
+  margin-top: var(--space-4);
 }

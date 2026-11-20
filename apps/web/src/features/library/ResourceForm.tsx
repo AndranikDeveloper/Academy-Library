@@ -21,7 +21,9 @@ import { ALL_RESOURCE_TAGS } from '../../shared/data/resources';
 import { useCoursesQuery } from './api/useCoursesQuery';
 import { useGroupsQuery } from './api/useGroupsQuery';
 import { TagInput } from './components/TagInput';
+import { UnsavedChangesDialog } from './components/UnsavedChangesDialog';
 import { applyServerFieldErrors, getResourceMutationErrorMessage } from './resourceErrors';
+import { useUnsavedChangesBlocker } from './useUnsavedChangesBlocker';
 import {
   CREATE_DEFAULTS,
   DURATION_TYPES,
@@ -109,6 +111,12 @@ export function ResourceForm(props: ResourceFormProps) {
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [isDirty]);
+
+  // Covers the gap `beforeunload` can't: an in-app navigation (a sidebar
+  // link, this page's own "Back to..." link, browser back/forward while
+  // still inside the SPA) away from a dirty form. See the hook's own
+  // doc comment for why a successful-submission navigate is exempt.
+  const blocker = useUnsavedChangesBlocker(isDirty);
 
   const onValid = handleSubmit((values) => {
     if (mode === 'create') {
@@ -348,6 +356,16 @@ export function ResourceForm(props: ResourceFormProps) {
           {submitLabel}
         </Button>
       </div>
+
+      <UnsavedChangesDialog
+        isOpen={blocker.state === 'blocked'}
+        onStay={() => {
+          if (blocker.state === 'blocked') blocker.reset();
+        }}
+        onLeave={() => {
+          if (blocker.state === 'blocked') blocker.proceed();
+        }}
+      />
     </form>
   );
 }

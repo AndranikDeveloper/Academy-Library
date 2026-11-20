@@ -31,7 +31,12 @@ beforeEach(async () => {
   await resetAllTables();
 });
 
+// See auth.routes.test.ts's identical `afterAll` for why this resets
+// again on the way out, not just on the way in (Task 05D) — this is
+// specifically the file whose last test ("...lists every real group...")
+// was observed leaving "Zoology Staff"/"Zoology Basics" rows behind.
 afterAll(async () => {
+  await resetAllTables();
   await prisma.$disconnect();
 });
 

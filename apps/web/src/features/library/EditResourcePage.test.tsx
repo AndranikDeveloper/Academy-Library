@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { Route, Routes } from 'react-router-dom';
 import { http, HttpResponse } from 'msw';
 import type { ResourceDetail } from '@academy-library/contracts';
 import { server } from '../../test/mswServer';
@@ -13,7 +12,7 @@ import {
   meHandler,
 } from '../../test/mswHandlers';
 import { MOCK_LECTURER_USER } from '../../test/authFixtures';
-import { renderWithProviders } from '../../test/renderWithProviders';
+import { renderWithDataRouter } from '../../test/renderWithProviders';
 import { EditResourcePage } from './EditResourcePage';
 
 const BASE_RESOURCE: ResourceDetail = {
@@ -40,12 +39,15 @@ function detailHandler(resource: ResourceDetail) {
   return http.get(`/api/v1/resources/${resource.id}`, () => HttpResponse.json(resource));
 }
 
+// `EditResourcePage` renders `ResourceForm`, which calls `useBlocker`
+// (Task 05D) — needs a real data router, not the classic
+// `renderWithProviders`/`<MemoryRouter>` (see that helper's doc comment).
 function renderEditPage() {
-  return renderWithProviders(
-    <Routes>
-      <Route path="/library/:resourceId/edit" element={<EditResourcePage />} />
-      <Route path="/library/:resourceId" element={<p>Resource detail stub</p>} />
-    </Routes>,
+  return renderWithDataRouter(
+    [
+      { path: '/library/:resourceId/edit', element: <EditResourcePage /> },
+      { path: '/library/:resourceId', element: <p>Resource detail stub</p> },
+    ],
     { route: `/library/${BASE_RESOURCE.id}/edit` },
   );
 }

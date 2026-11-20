@@ -3,9 +3,21 @@ import { ZodError } from 'zod';
 import type {
   ApiErrorResponse,
   AuthResponse,
+  Bookmark,
+  BookmarkListResponse,
+  BookCopy,
+  BookCopyListResponse,
+  CollectionDetail,
+  CollectionResourceItem,
+  CollectionSummaryListResponse,
   CourseRef,
+  DashboardStats,
   GroupRef,
+  LearningPageResponse,
+  Loan,
+  LoanListResponse,
   PublicUser,
+  ResourceSummary,
 } from '@academy-library/contracts';
 import {
   ResourceCreateInputSchema,
@@ -226,3 +238,324 @@ export const defaultResourceWriteHandlers = [
   ]),
   groupsHandler(),
 ];
+
+// ---------------------------------------------------------------------
+// Collections (Task 06)
+// ---------------------------------------------------------------------
+
+const EMPTY_COLLECTION_LIST: CollectionSummaryListResponse = {
+  items: [],
+  page: 1,
+  pageSize: 12,
+  totalItems: 0,
+  totalPages: 1,
+};
+
+/** Fixed-response handler for list-rendering/empty/error-state tests —
+ * most Collections tests don't need real filter/sort/pagination logic,
+ * just a specific response shape to render against. */
+export function collectionListHandler(
+  response: CollectionSummaryListResponse = EMPTY_COLLECTION_LIST,
+) {
+  return http.get('/api/v1/collections', () => HttpResponse.json(response));
+}
+
+export function collectionDetailHandler(detail: CollectionDetail | null) {
+  return http.get('/api/v1/collections/:id', () =>
+    detail
+      ? HttpResponse.json(detail)
+      : apiError(404, { error: { message: 'Collection not found', code: 'NOT_FOUND' } }),
+  );
+}
+
+export const collectionCreateHandler = http.post('/api/v1/collections', async ({ request }) => {
+  const body = (await request.json()) as Record<string, unknown>;
+  const now = new Date().toISOString();
+  const detail: CollectionDetail = {
+    id: 'new-collection',
+    title: typeof body.title === 'string' ? body.title : '',
+    description: typeof body.description === 'string' ? body.description : '',
+    coverImageUrl: (body.coverImageUrl as string | undefined) ?? null,
+    visibility: (body.visibility as CollectionDetail['visibility']) ?? 'PUBLIC',
+    restrictedToGroupIds: (body.restrictedToGroupIds as string[] | undefined) ?? [],
+    capabilities: { canEdit: true, canDelete: true },
+    resources: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  return HttpResponse.json(detail, { status: 201 });
+});
+
+/**
+ * A minimal in-memory collection detail that mutation handlers below
+ * read and write — enough statefulness to exercise a real add → remove
+ * → reorder sequence against the same collection within one test,
+ * without building a second full mock repository the way
+ * `mockResourceRepository` backs the Resource domain's own MSW
+ * handlers. Reset per test via `createStatefulCollectionHandlers`,
+ * never shared across tests.
+ */
+export function createStatefulCollectionHandlers(initial: CollectionDetail) {
+  let current: CollectionDetail = initial;
+
+  const get = http.get('/api/v1/collections/:id', () => HttpResponse.json(current));
+
+  const addResource = http.post('/api/v1/collections/:id/resources', async ({ request }) => {
+    const body = (await request.json()) as { resourceId: string; resource?: ResourceSummary };
+    if (!current.resources.some((item) => item.resource.id === body.resourceId)) {
+      const resource = body.resource ?? {
+        id: body.resourceId,
+        title: `Resource ${body.resourceId}`,
+        description: 'Added during a test.',
+        type: 'ARTICLE',
+        difficulty: 'BEGINNER',
+        creator: { name: 'Test Creator' },
+        coverImageUrl: null,
+        courses: [],
+        tags: [],
+        durationSeconds: null,
+        visibility: 'PUBLIC',
+        publishedAt: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      const newItem: CollectionResourceItem = { resource, position: current.resources.length };
+      current = { ...current, resources: [...current.resources, newItem] };
+    }
+    return HttpResponse.json(current);
+  });
+
+  const removeResource = http.delete(
+    '/api/v1/collections/:id/resources/:resourceId',
+    ({ params }) => {
+      current = {
+        ...current,
+        resources: current.resources.filter((item) => item.resource.id !== params.resourceId),
+      };
+      return HttpResponse.json(current);
+    },
+  );
+
+  const reorder = http.patch('/api/v1/collections/:id/resources/order', async ({ request }) => {
+    const body = (await request.json()) as { resourceIds: string[] };
+    const byId = new Map(current.resources.map((item) => [item.resource.id, item.resource]));
+    current = {
+      ...current,
+      resources: body.resourceIds.map((resourceId, position) => {
+        const resource = byId.get(resourceId);
+        if (!resource) throw new Error(`Test fixture missing resource ${resourceId}`);
+        return { resource, position };
+      }),
+    };
+    return HttpResponse.json(current);
+  });
+
+  return { get, addResource, removeResource, reorder };
+}
+
+// ---------------------------------------------------------------------
+// Bookmarks (Task 06)
+// ---------------------------------------------------------------------
+
+const EMPTY_BOOKMARK_LIST: BookmarkListResponse = {
+  items: [],
+  page: 1,
+  pageSize: 60,
+  totalItems: 0,
+  totalPages: 1,
+};
+
+/** Defaults to an empty list — any page that renders a Save/Saved
+ * toggle (`ResourceDetailsPage`) or `/saved` calls `GET /bookmarks`,
+ * so this is included in `defaultResourceWriteHandlers`-style handler
+ * sets wherever that matters, matching how `meHandler`/`csrfTokenHandler`
+ * are ambient dependencies most tests need regardless of what they're
+ * actually testing. */
+export function bookmarksHandler(response: BookmarkListResponse = EMPTY_BOOKMARK_LIST) {
+  return http.get('/api/v1/bookmarks', () => HttpResponse.json(response));
+}
+
+/** Backs `GET /bookmarks/:resourceId/status` (Task 07) — the endpoint
+ * `useIsResourceSaved` actually calls now, in place of deriving saved
+ * status from a page of the list handler above. Defaults to `false`
+ * ("not saved"), the same ambient-default convention `bookmarksHandler`
+ * itself uses. */
+export function bookmarkStatusHandler(isSaved = false) {
+  return http.get('/api/v1/bookmarks/:resourceId/status', ({ params }) =>
+    HttpResponse.json({ resourceId: params.resourceId, isSaved }),
+  );
+}
+
+export function bookmarkFor(
+  resource: ResourceSummary,
+  createdAt = new Date().toISOString(),
+): Bookmark {
+  return { resource, createdAt };
+}
+
+export const bookmarkCreateHandler = http.post(
+  '/api/v1/bookmarks',
+  () => new HttpResponse(null, { status: 204 }),
+);
+
+export const bookmarkDeleteHandler = http.delete(
+  '/api/v1/bookmarks/:resourceId',
+  () => new HttpResponse(null, { status: 204 }),
+);
+
+// ---------------------------------------------------------------------
+// Physical Library (Task 07)
+// ---------------------------------------------------------------------
+
+/** Defaults to an empty list — `ResourceDetailsPage` unconditionally
+ * renders `PhysicalCopiesSection` for a `BOOK` resource, so any test
+ * rendering one needs this registered, the same ambient-dependency
+ * convention `bookmarkStatusHandler` follows. */
+export function bookCopiesHandler(response: BookCopyListResponse = { items: [] }) {
+  return http.get('/api/v1/resources/:resourceId/copies', () => HttpResponse.json(response));
+}
+
+export function bookCopyFor(overrides: Partial<BookCopy> = {}): BookCopy {
+  return {
+    id: 'copy-1',
+    resourceId: 'res-1',
+    inventoryCode: 'INV-001',
+    status: 'AVAILABLE',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+export const registerCopyHandler = http.post(
+  '/api/v1/resources/:resourceId/copies',
+  async ({ request, params }) => {
+    const body = (await request.json()) as { inventoryCode: string };
+    return HttpResponse.json(
+      bookCopyFor({
+        resourceId: params.resourceId as string,
+        inventoryCode: body.inventoryCode,
+      }),
+      { status: 201 },
+    );
+  },
+);
+
+export const archiveCopyHandler = http.patch(
+  '/api/v1/resources/:resourceId/copies/:copyId',
+  ({ params }) =>
+    HttpResponse.json(
+      bookCopyFor({
+        id: params.copyId as string,
+        resourceId: params.resourceId as string,
+        status: 'ARCHIVED',
+      }),
+    ),
+);
+
+// ---------------------------------------------------------------------
+// Loans (Task 07)
+// ---------------------------------------------------------------------
+
+const EMPTY_LOAN_LIST: LoanListResponse = {
+  items: [],
+  page: 1,
+  pageSize: 10,
+  totalItems: 0,
+  totalPages: 1,
+};
+
+/** A minimal, valid `ResourceSummary` for tests that need *some* book
+ * to attach a loan to and don't care about its specific fields. */
+export function resourceSummaryFor(overrides: Partial<ResourceSummary> = {}): ResourceSummary {
+  return {
+    id: 'res-1',
+    title: 'A Borrowable Book',
+    description: 'A book with physical copies.',
+    type: 'BOOK',
+    difficulty: 'BEGINNER',
+    creator: { name: 'Test Author' },
+    coverImageUrl: null,
+    courses: [],
+    tags: [],
+    durationSeconds: null,
+    visibility: 'PUBLIC',
+    publishedAt: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+export function loanFor(
+  resource: ResourceSummary = resourceSummaryFor(),
+  overrides: Partial<Loan> = {},
+): Loan {
+  return {
+    id: 'loan-1',
+    copy: { id: 'copy-1', inventoryCode: 'INV-001', resource },
+    borrower: { id: 'user-1', displayName: 'Test User' },
+    status: 'ACTIVE',
+    borrowedAt: new Date().toISOString(),
+    dueAt: new Date(Date.now() + 21 * 24 * 60 * 60 * 1000).toISOString(),
+    returnedAt: null,
+    isOverdue: false,
+    ...overrides,
+  };
+}
+
+/** Backs `GET /loans` — the current user's own loans. */
+export function loansHandler(response: LoanListResponse = EMPTY_LOAN_LIST) {
+  return http.get('/api/v1/loans', () => HttpResponse.json(response));
+}
+
+/** Backs `GET /loans/all` — the ADMIN-only system-wide listing. */
+export function allLoansHandler(response: LoanListResponse = EMPTY_LOAN_LIST) {
+  return http.get('/api/v1/loans/all', () => HttpResponse.json(response));
+}
+
+export function borrowResourceHandler(loan: Loan = loanFor()) {
+  return http.post('/api/v1/loans', () => HttpResponse.json(loan, { status: 201 }));
+}
+
+export function returnLoanHandler(
+  loan: Loan = loanFor(resourceSummaryFor(), {
+    status: 'RETURNED',
+    returnedAt: new Date().toISOString(),
+  }),
+) {
+  return http.patch('/api/v1/loans/:id', ({ params }) =>
+    HttpResponse.json({ ...loan, id: params.id as string }),
+  );
+}
+
+// ---------------------------------------------------------------------
+// Dashboard (Task 07)
+// ---------------------------------------------------------------------
+
+const EMPTY_DASHBOARD_STATS: DashboardStats = {
+  totalAccessibleResources: 0,
+  savedResourcesCount: 0,
+  availableCollectionsCount: 0,
+  activeLoansCount: 0,
+  recentResources: [],
+};
+
+export function dashboardStatsHandler(stats: DashboardStats = EMPTY_DASHBOARD_STATS) {
+  return http.get('/api/v1/dashboard', () => HttpResponse.json(stats));
+}
+
+// ---------------------------------------------------------------------
+// My Learning (Task 07)
+// ---------------------------------------------------------------------
+
+const EMPTY_LEARNING_PAGE: LearningPageResponse = {
+  courseGroups: [],
+  relevantCollections: [],
+  recentMaterials: [],
+  recommendations: [],
+};
+
+export function learningPageHandler(response: LearningPageResponse = EMPTY_LEARNING_PAGE) {
+  return http.get('/api/v1/learning', () => HttpResponse.json(response));
+}

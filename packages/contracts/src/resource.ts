@@ -48,7 +48,7 @@ export const RESOURCE_SORTS = ResourceSortSchema.options;
  * before it is rendered. The frontend guard stays in place regardless,
  * as defense-in-depth against any data that predates this check.
  */
-const SafeHttpUrlSchema = z
+export const SafeHttpUrlSchema = z
   .string()
   .url()
   .refine(

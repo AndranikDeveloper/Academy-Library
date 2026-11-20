@@ -55,6 +55,7 @@ describe('route configuration', () => {
       { index: true, handle: { title: 'Admin Dashboard' } },
       { path: 'resources', handle: { title: 'Manage Resources' } },
       { path: 'users', handle: { title: 'Users' } },
+      { path: 'loans', handle: { title: 'Manage Loans' } },
     ]);
   });
 

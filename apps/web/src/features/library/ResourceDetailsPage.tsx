@@ -1,8 +1,11 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Calendar, ExternalLink, Lock, Pencil, SearchX, Trash2 } from 'lucide-react';
+import { Bookmark, Calendar, ExternalLink, Lock, Pencil, SearchX, Trash2 } from 'lucide-react';
 import { useResourceDetailQuery } from './api/useResourceDetailQuery';
 import { useDeleteResourceMutation } from './api/useDeleteResourceMutation';
+import { useIsResourceSaved } from '../saved/api/useIsResourceSaved';
+import { useSaveResourceMutation } from '../saved/api/useSaveResourceMutation';
+import { useUnsaveResourceMutation } from '../saved/api/useUnsaveResourceMutation';
 import { Alert } from '../../shared/ui/Alert';
 import { Badge } from '../../shared/ui/Badge';
 import { Button } from '../../shared/ui/Button';
@@ -10,8 +13,9 @@ import { Skeleton, SkeletonText } from '../../shared/ui/Skeleton';
 import { useToast } from '../../shared/ui/Toast';
 import { isSafeHttpUrl } from '../../shared/data/resources';
 import { DeleteResourceDialog } from './components/DeleteResourceDialog';
+import { PhysicalCopiesSection } from './components/PhysicalCopiesSection';
 import { formatDuration } from './formatDuration';
-import { getResourceDetailErrorMessage } from './resourceErrors';
+import { getResourceDetailErrorMessage, getResourceMutationErrorMessage } from './resourceErrors';
 import { RESOURCE_DIFFICULTY_META, RESOURCE_TYPE_META } from './resourceTypeMeta';
 import styles from './ResourceDetailsPage.module.css';
 
@@ -30,6 +34,10 @@ export function ResourceDetailsPage() {
   const { data, error, isPending, isError, refetch } = useResourceDetailQuery(resourceId);
   const deleteMutation = useDeleteResourceMutation();
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const { isSaved } = useIsResourceSaved(resourceId);
+  const saveMutation = useSaveResourceMutation();
+  const unsaveMutation = useUnsaveResourceMutation();
+  const isSaveToggleBusy = saveMutation.isPending || unsaveMutation.isPending;
 
   if (isPending) {
     return (
@@ -97,31 +105,60 @@ export function ResourceDetailsPage() {
           {/* A display convenience only — `capabilities` is computed
            * server-side (see `ResourceCapabilitiesSchema`), and the
            * real enforcement is the backend's own check on `PATCH`/
-           * `DELETE`, not this button's mere presence. */}
-          {(data.capabilities.canEdit || data.capabilities.canDelete) && (
-            <div className={styles.manageActions}>
-              {data.capabilities.canEdit && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  leadingIcon={<Pencil aria-hidden="true" size={14} />}
-                  onClick={() => navigate(`/library/${data.id}/edit`)}
-                >
-                  Edit
-                </Button>
-              )}
-              {data.capabilities.canDelete && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  leadingIcon={<Trash2 aria-hidden="true" size={14} />}
-                  onClick={() => setIsDeleteDialogOpen(true)}
-                >
-                  Delete
-                </Button>
-              )}
-            </div>
-          )}
+           * `DELETE`, not this button's mere presence. The Save toggle
+           * is unconditional — unlike Edit/Delete, saving a resource
+           * has no ownership requirement, any authenticated viewer can
+           * bookmark any resource they can see. */}
+          <div className={styles.manageActions}>
+            <Button
+              variant="outline"
+              size="sm"
+              leadingIcon={
+                <Bookmark aria-hidden="true" size={14} fill={isSaved ? 'currentColor' : 'none'} />
+              }
+              isLoading={isSaveToggleBusy}
+              onClick={() => {
+                const onError = (mutationError: unknown) => {
+                  showToast({
+                    variant: 'error',
+                    title: isSaved ? "Couldn't remove from saved" : "Couldn't save resource",
+                    description: getResourceMutationErrorMessage(mutationError),
+                  });
+                };
+                if (isSaved) {
+                  unsaveMutation.mutate(data.id, { onError });
+                } else {
+                  saveMutation.mutate(data.id, { onError });
+                }
+              }}
+            >
+              {isSaved ? 'Saved' : 'Save'}
+            </Button>
+            {(data.capabilities.canEdit || data.capabilities.canDelete) && (
+              <>
+                {data.capabilities.canEdit && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    leadingIcon={<Pencil aria-hidden="true" size={14} />}
+                    onClick={() => navigate(`/library/${data.id}/edit`)}
+                  >
+                    Edit
+                  </Button>
+                )}
+                {data.capabilities.canDelete && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    leadingIcon={<Trash2 aria-hidden="true" size={14} />}
+                    onClick={() => setIsDeleteDialogOpen(true)}
+                  >
+                    Delete
+                  </Button>
+                )}
+              </>
+            )}
+          </div>
         </div>
         <h1 className={styles.title}>{data.title}</h1>
         <p className={styles.creator}>
@@ -220,6 +257,8 @@ export function ResourceDetailsPage() {
           </ul>
         </section>
       )}
+
+      {data.type === 'BOOK' && <PhysicalCopiesSection resourceId={data.id} />}
 
       {data.capabilities.canDelete && (
         <DeleteResourceDialog
